@@ -1,0 +1,165 @@
+openapi: 3.0.3
+info:
+  title: Actual Game Search API
+  version: 0.1.0
+  description: Hybrid full-text + semantic search returning grouped-by-game candidates for client re-ranking.
+servers:
+  - url: http://localhost:8080
+paths:
+  /api/search:
+    get:
+      summary: Search games and reviews
+      description: Returns grouped candidates by game for client-side re-ranking.
+      parameters:
+        - in: query
+          name: q
+          schema:
+            type: string
+          required: true
+          description: Search query text
+        - in: query
+          name: minReviews
+          schema:
+            type: integer
+            minimum: 0
+        - in: query
+          name: adultOnly
+          schema:
+            type: boolean
+        - in: query
+          name: controller
+          schema:
+            type: string
+            enum: [none, partial, full]
+        - in: query
+          name: includeDLC
+          schema:
+            type: boolean
+            default: true
+        - in: query
+          name: candidateCap
+          schema:
+            type: integer
+            minimum: 50
+            maximum: 2000
+            default: 500
+        - in: query
+          name: convergence.minReviewMatches
+          schema:
+            type: integer
+            minimum: 0
+        - in: query
+          name: convergence.requireGameAndReview
+          schema:
+            type: boolean
+        - in: query
+          name: weights.semantic
+          schema:
+            type: number
+            minimum: 0
+            maximum: 1
+            default: 0.5
+        - in: query
+          name: weights.text
+          schema:
+            type: number
+            minimum: 0
+            maximum: 1
+            default: 0.5
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  queryId:
+                    type: string
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/GameCandidates'
+        '400':
+          description: Invalid parameters
+  /api/similar/{gameId}:
+    get:
+      summary: Find similar games
+      parameters:
+        - in: path
+          name: gameId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/GameCandidates'
+        '404':
+          description: Not found
+components:
+  schemas:
+    Candidate:
+      type: object
+      properties:
+        gameId:
+          type: string
+        gameTitle:
+          type: string
+        reviewId:
+          type: string
+          nullable: true
+        textScore:
+          type: number
+        semanticScore:
+          type: number
+        combinedScore:
+          type: number
+        excerpt:
+          type: string
+          nullable: true
+        reviewMeta:
+          type: object
+          nullable: true
+          properties:
+            helpfulVotes:
+              type: integer
+            createdAt:
+              type: string
+              format: date-time
+    GameCandidates:
+      type: object
+      properties:
+        gameId:
+          type: string
+        gameTitle:
+          type: string
+        tagSummary:
+          type: array
+          items:
+            type: string
+        reviewCount:
+          type: integer
+        purchaseOriginRatio:
+          type: object
+          properties:
+            steam:
+              type: number
+            other:
+              type: number
+            unknown:
+              type: number
+            totalSampled:
+              type: integer
+        candidates:
+          type: array
+          items:
+            $ref: '#/components/schemas/Candidate'

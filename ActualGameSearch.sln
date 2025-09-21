@@ -1,0 +1,78 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{12251854-2907-4D6A-83BC-13C41E02DDB7}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ActualGameSearch.Api", "src\ActualGameSearch.Api\ActualGameSearch.Api.csproj", "{438D4E8E-009A-40A7-8507-66FD87368BC1}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ActualGameSearch.Core", "src\ActualGameSearch.Core\ActualGameSearch.Core.csproj", "{ECD212B7-E7E9-4C50-998D-A4DA7443E3F6}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ActualGameSearch.Worker", "src\ActualGameSearch.Worker\ActualGameSearch.Worker.csproj", "{C98E4A46-7638-4A9C-918E-BEE81B7DE993}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ActualGameSearch.ServiceDefaults", "src\ActualGameSearch.ServiceDefaults\ActualGameSearch.ServiceDefaults.csproj", "{BDDD649F-2762-4F28-8E1B-5EDB057BEEE2}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ActualGameSearch.AppHost", "src\ActualGameSearch.AppHost\ActualGameSearch.AppHost.csproj", "{0EAA9F72-B0BD-4342-B0F9-05F8478D4801}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{661FB580-A719-4C3E-AC9A-E9DCE89EE29D}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ActualGameSearch.ContractTests", "tests\ActualGameSearch.ContractTests\ActualGameSearch.ContractTests.csproj", "{FEC10E78-7B48-44BA-A120-4C8D31B51555}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ActualGameSearch.IntegrationTests", "tests\ActualGameSearch.IntegrationTests\ActualGameSearch.IntegrationTests.csproj", "{E83D59E6-4139-4F4E-A2F5-94B134615D4E}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ActualGameSearch.UnitTests", "tests\ActualGameSearch.UnitTests\ActualGameSearch.UnitTests.csproj", "{3EDE7D18-5945-40BE-91D3-9AE009D58E08}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{438D4E8E-009A-40A7-8507-66FD87368BC1}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{438D4E8E-009A-40A7-8507-66FD87368BC1}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{438D4E8E-009A-40A7-8507-66FD87368BC1}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{438D4E8E-009A-40A7-8507-66FD87368BC1}.Release|Any CPU.Build.0 = Release|Any CPU
+		{ECD212B7-E7E9-4C50-998D-A4DA7443E3F6}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{ECD212B7-E7E9-4C50-998D-A4DA7443E3F6}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{ECD212B7-E7E9-4C50-998D-A4DA7443E3F6}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{ECD212B7-E7E9-4C50-998D-A4DA7443E3F6}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C98E4A46-7638-4A9C-918E-BEE81B7DE993}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C98E4A46-7638-4A9C-918E-BEE81B7DE993}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C98E4A46-7638-4A9C-918E-BEE81B7DE993}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C98E4A46-7638-4A9C-918E-BEE81B7DE993}.Release|Any CPU.Build.0 = Release|Any CPU
+		{BDDD649F-2762-4F28-8E1B-5EDB057BEEE2}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{BDDD649F-2762-4F28-8E1B-5EDB057BEEE2}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{BDDD649F-2762-4F28-8E1B-5EDB057BEEE2}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{BDDD649F-2762-4F28-8E1B-5EDB057BEEE2}.Release|Any CPU.Build.0 = Release|Any CPU
+		{0EAA9F72-B0BD-4342-B0F9-05F8478D4801}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{0EAA9F72-B0BD-4342-B0F9-05F8478D4801}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{0EAA9F72-B0BD-4342-B0F9-05F8478D4801}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{0EAA9F72-B0BD-4342-B0F9-05F8478D4801}.Release|Any CPU.Build.0 = Release|Any CPU
+		{FEC10E78-7B48-44BA-A120-4C8D31B51555}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{FEC10E78-7B48-44BA-A120-4C8D31B51555}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{FEC10E78-7B48-44BA-A120-4C8D31B51555}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{FEC10E78-7B48-44BA-A120-4C8D31B51555}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E83D59E6-4139-4F4E-A2F5-94B134615D4E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E83D59E6-4139-4F4E-A2F5-94B134615D4E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E83D59E6-4139-4F4E-A2F5-94B134615D4E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E83D59E6-4139-4F4E-A2F5-94B134615D4E}.Release|Any CPU.Build.0 = Release|Any CPU
+		{3EDE7D18-5945-40BE-91D3-9AE009D58E08}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3EDE7D18-5945-40BE-91D3-9AE009D58E08}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3EDE7D18-5945-40BE-91D3-9AE009D58E08}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3EDE7D18-5945-40BE-91D3-9AE009D58E08}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{438D4E8E-009A-40A7-8507-66FD87368BC1} = {12251854-2907-4D6A-83BC-13C41E02DDB7}
+		{ECD212B7-E7E9-4C50-998D-A4DA7443E3F6} = {12251854-2907-4D6A-83BC-13C41E02DDB7}
+		{C98E4A46-7638-4A9C-918E-BEE81B7DE993} = {12251854-2907-4D6A-83BC-13C41E02DDB7}
+		{BDDD649F-2762-4F28-8E1B-5EDB057BEEE2} = {12251854-2907-4D6A-83BC-13C41E02DDB7}
+		{0EAA9F72-B0BD-4342-B0F9-05F8478D4801} = {12251854-2907-4D6A-83BC-13C41E02DDB7}
+		{FEC10E78-7B48-44BA-A120-4C8D31B51555} = {661FB580-A719-4C3E-AC9A-E9DCE89EE29D}
+		{E83D59E6-4139-4F4E-A2F5-94B134615D4E} = {661FB580-A719-4C3E-AC9A-E9DCE89EE29D}
+		{3EDE7D18-5945-40BE-91D3-9AE009D58E08} = {661FB580-A719-4C3E-AC9A-E9DCE89EE29D}
+	EndGlobalSection
+EndGlobal
