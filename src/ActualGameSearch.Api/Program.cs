@@ -1,9 +1,18 @@
 using ActualGameSearch.ServiceDefaults;
 using ActualGameSearch.Core.Primitives;
 using ActualGameSearch.Core.Models;
+using Microsoft.Extensions.AI;
+using OllamaSharp;
+using ActualGameSearch.Core.Embeddings;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.AddServiceDefaults();
+
+// Embeddings registration via M.E.AI + OllamaSharp
+var ollamaEndpoint = builder.Configuration["Ollama:Endpoint"] ?? "http://localhost:11434/";
+var ollamaModel = builder.Configuration["Ollama:Model"] ?? "nomic-embed-text";
+builder.Services.AddSingleton<IEmbeddingGenerator<string, Embedding<float>>>(_ => new OllamaApiClient(new Uri(ollamaEndpoint), ollamaModel));
+builder.Services.AddSingleton<ITextEmbeddingService, TextEmbeddingService>();
 
 var app = builder.Build();
 
