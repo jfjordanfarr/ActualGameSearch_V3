@@ -14,6 +14,9 @@ var ollamaModel = builder.Configuration["Ollama:Model"] ?? "nomic-embed-text";
 builder.Services.AddSingleton<IEmbeddingGenerator<string, Embedding<float>>>(_ => new OllamaApiClient(new Uri(ollamaEndpoint), ollamaModel));
 builder.Services.AddSingleton<ITextEmbeddingService, TextEmbeddingService>();
 
+// Cosmos client via .NET Aspire integration; name must match AppHost resource
+builder.AddAzureCosmosClient("cosmos-db");
+
 var app = builder.Build();
 
 app.UseDefaultFiles();
