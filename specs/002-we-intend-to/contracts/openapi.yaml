@@ -6,6 +6,88 @@ info:
 servers:
   - url: http://localhost:8080
 paths:
+  /api/search/games:
+    get:
+      summary: Search games only (cheap preview)
+      description: Returns lightweight game summaries for initial preview.
+      parameters:
+        - in: query
+          name: q
+          schema:
+            type: string
+          required: true
+          description: Search query text
+        - in: query
+          name: candidateCap
+          schema:
+            type: integer
+            minimum: 50
+            maximum: 2000
+            default: 200
+        - in: query
+          name: adultOnly
+          schema:
+            type: boolean
+        - in: query
+          name: controller
+          schema:
+            type: string
+            enum: [none, partial, full]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/GameSummary'
+        '400':
+          description: Invalid parameters
+  /api/search/reviews:
+    get:
+      summary: Search reviews only
+      description: Returns review candidates suitable for client-side re-ranking.
+      parameters:
+        - in: query
+          name: q
+          schema:
+            type: string
+          required: true
+          description: Search query text
+        - in: query
+          name: candidateCap
+          schema:
+            type: integer
+            minimum: 50
+            maximum: 2000
+            default: 500
+        - in: query
+          name: convergence.minReviewMatches
+          schema:
+            type: integer
+            minimum: 0
+        - in: query
+          name: convergence.requireGameAndReview
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Candidate'
+        '400':
+          description: Invalid parameters
   /api/search:
     get:
       summary: Search games and reviews
@@ -107,6 +189,19 @@ paths:
           description: Not found
 components:
   schemas:
+    GameSummary:
+      type: object
+      properties:
+        gameId:
+          type: string
+        gameTitle:
+          type: string
+        tagSummary:
+          type: array
+          items:
+            type: string
+        reviewCount:
+          type: integer
     Candidate:
       type: object
       properties:

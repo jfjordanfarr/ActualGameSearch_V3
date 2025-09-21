@@ -50,7 +50,7 @@
   - Dependencies: T001
 
 ## Phase 3.2: Tests First (TDD) ⚠️ MUST COMPLETE BEFORE 3.3
-- [ ] T005 Update OpenAPI for cheap preview (games‑first)
+- [x] T005 Update OpenAPI for cheap preview (games‑first)
   - Extend `contracts/openapi.yaml` with:
     - GET `/api/search/games` → games‑only hybrid results
     - GET `/api/search/reviews` → reviews‑only hybrid results
@@ -58,15 +58,15 @@
   - Validate query params mirror shared `FilterSet` (caps, controller, adultOnly, convergence)
   - File: `specs/002-we-intend-to/contracts/openapi.yaml`
   - Dependencies: none
-- [ ] T006 [P] Contract test GET /api/search/games
+- [x] T006 [P] Contract test GET /api/search/games
   - Implement in `tests/ActualGameSearch.ContractTests/GamesSearchContractTests.cs`
   - Validate `q`, caps, filters; response schema for games array with lightweight fields
   - Dependencies: T005, T003
-- [ ] T007 [P] Contract test GET /api/search/reviews
+- [x] T007 [P] Contract test GET /api/search/reviews
   - Implement in `tests/ActualGameSearch.ContractTests/ReviewsSearchContractTests.cs`
   - Validate `q`, caps, filters, convergence params
   - Dependencies: T005, T003
-- [ ] T008 [P] Contract test GET /api/search (grouped)
+- [x] T008 [P] Contract test GET /api/search (grouped)
   - Implement in `tests/ActualGameSearch.ContractTests/SearchContractTests.cs`
   - Validate grouped payload shape (game + candidates[])
   - Dependencies: T005, T003
