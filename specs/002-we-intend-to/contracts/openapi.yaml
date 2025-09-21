@@ -39,12 +39,17 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  items:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/GameSummary'
+                allOf:
+                  - $ref: '#/components/schemas/Result'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          items:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/GameSummary'
         '400':
           description: Invalid parameters
   /api/search/reviews:
@@ -80,12 +85,17 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  items:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/Candidate'
+                allOf:
+                  - $ref: '#/components/schemas/Result'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          items:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/Candidate'
         '400':
           description: Invalid parameters
   /api/search:
@@ -154,14 +164,19 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  queryId:
-                    type: string
-                  items:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/GameCandidates'
+                allOf:
+                  - $ref: '#/components/schemas/Result'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          queryId:
+                            type: string
+                          items:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/GameCandidates'
         '400':
           description: Invalid parameters
   /api/similar/{gameId}:
@@ -189,6 +204,25 @@ paths:
           description: Not found
 components:
   schemas:
+    Result:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        data:
+          nullable: true
+        error:
+          nullable: true
+          $ref: '#/components/schemas/Error'
+    Error:
+      type: object
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        details:
+          nullable: true
     GameSummary:
       type: object
       properties:

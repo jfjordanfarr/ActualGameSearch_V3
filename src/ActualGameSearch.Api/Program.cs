@@ -1,5 +1,6 @@
 using ActualGameSearch.ServiceDefaults;
 using ActualGameSearch.Core.Primitives;
+using ActualGameSearch.Core.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.AddServiceDefaults();
@@ -18,8 +19,8 @@ app.MapGet("/api/search/games", (string? q) =>
 	{
 		return Results.BadRequest(Result<object>.Fail("missing_q", "Query parameter 'q' is required."));
 	}
-	var payload = new { items = Array.Empty<object>() };
-	return Results.Ok(Result<object>.Success(payload));
+	var payload = new GamesSearchResponse(Array.Empty<GameSummary>());
+	return Results.Ok(Result<GamesSearchResponse>.Success(payload));
 });
 
 app.MapGet("/api/search/reviews", (string? q) =>
@@ -28,8 +29,8 @@ app.MapGet("/api/search/reviews", (string? q) =>
 	{
 		return Results.BadRequest(Result<object>.Fail("missing_q", "Query parameter 'q' is required."));
 	}
-	var payload = new { items = Array.Empty<object>() };
-	return Results.Ok(Result<object>.Success(payload));
+	var payload = new ReviewsSearchResponse(Array.Empty<Candidate>());
+	return Results.Ok(Result<ReviewsSearchResponse>.Success(payload));
 });
 
 app.MapGet("/api/search", (string? q) =>
@@ -38,8 +39,8 @@ app.MapGet("/api/search", (string? q) =>
 	{
 		return Results.BadRequest(Result<object>.Fail("missing_q", "Query parameter 'q' is required."));
 	}
-	var payload = new { queryId = Guid.NewGuid().ToString("n"), items = Array.Empty<object>() };
-	return Results.Ok(Result<object>.Success(payload));
+	var payload = new GroupedSearchResponse(Guid.NewGuid().ToString("n"), Array.Empty<GameCandidates>());
+	return Results.Ok(Result<GroupedSearchResponse>.Success(payload));
 });
 
 app.Run();
