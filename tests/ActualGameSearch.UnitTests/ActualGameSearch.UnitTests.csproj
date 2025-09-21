@@ -20,4 +20,8 @@
     <Using Include="Xunit" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="../../src/ActualGameSearch.Core/ActualGameSearch.Core.csproj" />
+  </ItemGroup>
+
 </Project>
