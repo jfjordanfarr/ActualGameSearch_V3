@@ -1,0 +1,5 @@
+# Ignore all generated artifacts in this folder by default
+*
+
+# But keep these files under version control
+!.gitignore
