@@ -7,28 +7,22 @@ using ActualGameSearch.Core.Embeddings;
 using ActualGameSearch.Core.Repositories;
 using ActualGameSearch.Api.Data;
 using ActualGameSearch.Api.Infrastructure;
+using Microsoft.Azure.Cosmos;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.AddServiceDefaults();
 
 // Embeddings registration via M.E.AI + OllamaSharp
 var ollamaEndpoint = builder.Configuration["Ollama:Endpoint"] ?? "http://localhost:11434/";
-var ollamaModel = builder.Configuration["Ollama:Model"] ?? "nomic-embed-text";
+var ollamaModel = builder.Configuration["Ollama:Model"] ?? "nomic-embed-text:v1.5";
 builder.Services.AddSingleton<IEmbeddingGenerator<string, Embedding<float>>>(_ => new OllamaApiClient(new Uri(ollamaEndpoint), ollamaModel));
 builder.Services.AddSingleton<ITextEmbeddingService, TextEmbeddingService>();
 
-// Cosmos client via .NET Aspire integration (conditionally configured)
-var cosmosConn = builder.Configuration.GetConnectionString("cosmos-db");
-var cosmosAspireSection = builder.Configuration.GetSection("Aspire:Microsoft:Azure:Cosmos");
-var cosmosIsConfigured = !string.IsNullOrWhiteSpace(cosmosConn) || cosmosAspireSection.Exists();
-if (cosmosIsConfigured)
-{
-	builder.AddAzureCosmosClient("cosmos-db");
-	// Repositories backed by Cosmos containers
-	builder.Services.AddScoped<IGamesRepository, CosmosGamesRepository>();
-	builder.Services.AddScoped<IReviewsRepository, CosmosReviewsRepository>();
-	builder.Services.AddHostedService<CosmosBootstrapper>();
-}
+// Cosmos client via .NET Aspire integration (service discovery aware)
+builder.AddAzureCosmosClient("cosmos-db");
+builder.Services.AddScoped<IGamesRepository, CosmosGamesRepository>();
+builder.Services.AddScoped<IReviewsRepository, CosmosReviewsRepository>();
+builder.Services.AddHostedService<CosmosBootstrapper>();
 
 var app = builder.Build();
 

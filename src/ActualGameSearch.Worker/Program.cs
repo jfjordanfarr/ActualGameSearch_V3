@@ -3,6 +3,7 @@ using System.Linq;
 using System.Net.Http.Json;
 using System.Text;
 using Microsoft.Azure.Cosmos;
+using ActualGameSearch.ServiceDefaults;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -13,11 +14,12 @@ internal class Program
 {
 	public static async Task Main(string[] args)
 	{
-		var builder = Host.CreateApplicationBuilder(args);
+	var builder = Host.CreateApplicationBuilder(args);
+	builder.AddServiceDefaults();
 
 		// Config defaults (can be overridden via appsettings or env)
 		var ollamaEndpoint = builder.Configuration["Ollama:Endpoint"] ?? "http://localhost:11434/";
-		var ollamaModel = builder.Configuration["Ollama:Model"] ?? "nomic-embed-text";
+		var ollamaModel = builder.Configuration["Ollama:Model"] ?? "nomic-embed-text:v1.5";
 		var cosmosConn = builder.Configuration.GetConnectionString("cosmos-db");
 		var dbName = builder.Configuration["Cosmos:Database"] ?? "actualgames";
 		var gamesContainer = builder.Configuration["Cosmos:GamesContainer"] ?? "games";
@@ -27,51 +29,34 @@ internal class Program
 	var distance = (builder.Configuration["Cosmos:Vector:DistanceFunction"] ?? "cosine").ToLowerInvariant();
 	var indexType = (builder.Configuration["Cosmos:Vector:IndexType"] ?? "diskann").ToLowerInvariant();
 
-		// Services
-		builder.Services.AddHttpClient();
+	// Services
+	builder.Services.AddHttpClient();
+	// Let Aspire wire CosmosClient via service discovery
+	builder.AddAzureCosmosClient("cosmos-db");
 
 		// Delay Cosmos client creation to runtime; we'll try to connect and otherwise fall back to writing JSON artifacts.
 
 		using var host = builder.Build();
 
 		var http = host.Services.GetRequiredService<IHttpClientFactory>().CreateClient();
-	// embedding via local function using Ollama HTTP when available
-		CosmosClient? cosmos = null;
+
+		// Attempt to pre-pull the embedding model in the Ollama container (best-effort)
 		try
 		{
-			if (!string.IsNullOrWhiteSpace(cosmosConn))
+			var pullUrl = new Uri(new Uri(ollamaEndpoint), "/api/pull");
+			var body = System.Text.Json.JsonSerializer.Serialize(new { name = ollamaModel });
+			using var req = new HttpRequestMessage(HttpMethod.Post, pullUrl)
 			{
-				cosmos = new CosmosClient(cosmosConn, new CosmosClientOptions { AllowBulkExecution = true });
-			}
-			else
-			{
-				// Attempt Aspire-provided single endpoint/key envs
-				var endpoint = Environment.GetEnvironmentVariable("ASPIRE__MICROSOFT__AZURE__COSMOS__COSMOS-DB__ENDPOINT")
-							   ?? Environment.GetEnvironmentVariable("COSMOS_ENDPOINT")
-							   ?? "https://localhost:8081/";
-				var key = Environment.GetEnvironmentVariable("ASPIRE__MICROSOFT__AZURE__COSMOS__COSMOS-DB__KEY")
-						  ?? Environment.GetEnvironmentVariable("COSMOS_KEY");
-				if (string.IsNullOrWhiteSpace(key))
-				{
-					// Try emulator default via resource token auth will still need key; give up to file mode
-					throw new InvalidOperationException("No Cosmos key available in environment or config");
-				}
-				var handler = new HttpClientHandler
-				{
-					ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
-				};
-				cosmos = new CosmosClient(endpoint, key, new CosmosClientOptions
-				{
-					ConnectionMode = ConnectionMode.Gateway,
-					AllowBulkExecution = true,
-					HttpClientFactory = () => new HttpClient(handler)
-				});
-			}
+				Content = new StringContent(body, Encoding.UTF8, "application/json")
+			};
+			using var resp = await http.SendAsync(req);
+			// ignore status; container may already have the model
 		}
-		catch (Exception ex)
-		{
-			Console.WriteLine($"Cosmos unavailable: {ex.Message}. Will write seed data to ./AI-Agent-Workspace/Artifacts instead.");
-		}
+		catch { /* ignore */ }
+	// embedding via local function using Ollama HTTP when available
+		CosmosClient? cosmos = null;
+		try { cosmos = host.Services.GetService<CosmosClient>(); }
+		catch { /* leave null to fall back to artifacts */ }
 
 		// DB and containers
 		Container? games = null;
@@ -79,8 +64,26 @@ internal class Program
 		Database? db = null;
 		if (cosmos is not null)
 		{
-			db = (await cosmos.CreateDatabaseIfNotExistsAsync(dbName)).Database;
-			games = (await db.CreateContainerIfNotExistsAsync(new ContainerProperties(gamesContainer, "/id"))).Container;
+			var attempts = 0;
+			while (attempts < 12 && db is null)
+			{
+				attempts++;
+				try
+				{
+					db = (await cosmos.CreateDatabaseIfNotExistsAsync(dbName)).Database;
+					games = (await db.CreateContainerIfNotExistsAsync(new ContainerProperties(gamesContainer, "/id"))).Container;
+				}
+				catch (Exception ex)
+				{
+					Console.WriteLine($"Cosmos DB init attempt {attempts} failed (non-fatal): {ex.Message}");
+					await Task.Delay(TimeSpan.FromSeconds(Math.Min(8, attempts * 2)), CancellationToken.None);
+				}
+			}
+			if (db is null)
+			{
+				// Give up and fall back to artifacts
+				cosmos = null;
+			}
 		}
 
 		// Ensure reviews container exists WITH VECTOR POLICY
@@ -123,10 +126,10 @@ internal class Program
 
 				reviews = (await db!.CreateContainerIfNotExistsAsync(props)).Container;
 			}
-			catch (CosmosException)
+			catch (Exception)
 			{
-				// Fallback to existing container
-				reviews = cosmos.GetContainer(dbName!, reviewsContainer);
+				// Fallback to existing container if available
+				reviews = cosmos.GetContainer(dbName ?? "actualgames", reviewsContainer);
 			}
 		}
 
@@ -234,6 +237,7 @@ internal class Program
 			{
 				var probe = "co-op puzzle with portals and witty writing";
 				var vec = (await GenerateVectorsAsync(http, ollamaEndpoint, ollamaModel, new List<string> { probe }, dims)).First();
+				// Cosmos Emulator currently supports 2-arg VectorDistance(vector, vector) when a vector policy defines the metric.
 				var sql = "SELECT TOP 5 c.id, c.gameTitle, VectorDistance(c.vector, @e) AS sim FROM c ORDER BY VectorDistance(c.vector, @e)";
 				var q = new QueryDefinition(sql).WithParameter("@e", vec);
 				using var it = reviews.GetItemQueryIterator<dynamic>(q);
@@ -347,39 +351,84 @@ internal class Program
 
 	private static async Task<List<float[]>> GenerateVectorsAsync(HttpClient http, string ollamaEndpoint, string model, List<string> texts, int dims)
 	{
-		try
+		// Try multiple compatible Ollama endpoints/shapes
+		async Task<(bool ok, List<float[]> vecs)> TryCallAsync(string path, object payload, Func<System.Text.Json.JsonElement, List<float[]>> projector)
 		{
-			var url = new Uri(new Uri(ollamaEndpoint), "/api/embeddings");
-			var body = System.Text.Json.JsonSerializer.Serialize(new { model, input = texts });
-			using var req = new HttpRequestMessage(HttpMethod.Post, url)
+			try
 			{
-				Content = new StringContent(body, Encoding.UTF8, "application/json")
-			};
-			using var resp = await http.SendAsync(req);
-			if (!resp.IsSuccessStatusCode) throw new Exception("embeddings http error");
-			using var stream = await resp.Content.ReadAsStreamAsync();
-			using var doc = await System.Text.Json.JsonDocument.ParseAsync(stream);
+				var url = new Uri(new Uri(ollamaEndpoint), path);
+				var body = System.Text.Json.JsonSerializer.Serialize(payload);
+				using var req = new HttpRequestMessage(HttpMethod.Post, url)
+				{
+					Content = new StringContent(body, Encoding.UTF8, "application/json")
+				};
+				using var resp = await http.SendAsync(req);
+				if (!resp.IsSuccessStatusCode) return (false, new());
+				using var stream = await resp.Content.ReadAsStreamAsync();
+				using var doc = await System.Text.Json.JsonDocument.ParseAsync(stream);
+				var list = projector(doc.RootElement);
+				if (list.Count == texts.Count) return (true, list);
+				return (false, new());
+			}
+			catch { return (false, new()); }
+		}
+
+		// Projectors for different API shapes
+		static List<float[]> ProjectEmbeddingsData(System.Text.Json.JsonElement root)
+		{
 			var list = new List<float[]>();
-			if (doc.RootElement.TryGetProperty("data", out var data) && data.ValueKind == System.Text.Json.JsonValueKind.Array)
+			if (root.TryGetProperty("data", out var data) && data.ValueKind == System.Text.Json.JsonValueKind.Array)
 			{
 				foreach (var item in data.EnumerateArray())
 				{
 					if (item.TryGetProperty("embedding", out var emb) && emb.ValueKind == System.Text.Json.JsonValueKind.Array)
 					{
-						var vec = emb.EnumerateArray().Select(x => x.GetSingle()).ToArray();
-						list.Add(vec);
+						list.Add(emb.EnumerateArray().Select(x => x.GetSingle()).ToArray());
 					}
 				}
 			}
-			if (list.Count == texts.Count)
-				return list;
-			// mismatch -> fallback
-			throw new Exception("embedding count mismatch");
+			return list;
 		}
-		catch
+
+		static List<float[]> ProjectEmbedArray(System.Text.Json.JsonElement root)
 		{
-			// fallback deterministic
-			return texts.Select(t => DeterministicVector(t, dims)).ToList();
+			// Some endpoints return { "embeddings": [[...], [...]] }
+			var list = new List<float[]>();
+			if (root.TryGetProperty("embeddings", out var arr) && arr.ValueKind == System.Text.Json.JsonValueKind.Array)
+			{
+				foreach (var emb in arr.EnumerateArray())
+				{
+					if (emb.ValueKind == System.Text.Json.JsonValueKind.Array)
+						list.Add(emb.EnumerateArray().Select(x => x.GetSingle()).ToArray());
+				}
+			}
+			return list;
 		}
+
+		// 1) Ollama /api/embeddings with "input"
+		var t1 = await TryCallAsync("/api/embeddings", new { model, input = texts }, ProjectEmbeddingsData);
+		if (t1.ok)
+		{
+			Console.WriteLine($"Ollama embeddings via /api/embeddings input (dims={t1.vecs.FirstOrDefault()?.Length ?? 0})");
+			return t1.vecs;
+		}
+		// 2) Ollama /api/embeddings with "prompt" (per model docs)
+		var t2 = await TryCallAsync("/api/embeddings", new { model, prompt = texts }, ProjectEmbeddingsData);
+		if (t2.ok)
+		{
+			Console.WriteLine($"Ollama embeddings via /api/embeddings prompt (dims={t2.vecs.FirstOrDefault()?.Length ?? 0})");
+			return t2.vecs;
+		}
+		// 3) Ollama /api/embed with "input"
+		var t3 = await TryCallAsync("/api/embed", new { model, input = texts }, ProjectEmbedArray);
+		if (t3.ok)
+		{
+			Console.WriteLine($"Ollama embeddings via /api/embed (dims={t3.vecs.FirstOrDefault()?.Length ?? 0})");
+			return t3.vecs;
+		}
+
+		// Fallback deterministic embeddings
+		Console.WriteLine("Using deterministic fallback embeddings.");
+		return texts.Select(t => DeterministicVector(t, dims)).ToList();
 	}
 }

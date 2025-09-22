@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <ProjectReference Include="../ActualGameSearch.Core/ActualGameSearch.Core.csproj" />
+    <ProjectReference Include="../ActualGameSearch.ServiceDefaults/ActualGameSearch.ServiceDefaults.csproj" />
   </ItemGroup>
 
   <ItemGroup>
