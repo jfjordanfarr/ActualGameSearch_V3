@@ -86,6 +86,12 @@ frontend/
 
 **Structure Decision**: Web application (frontend + backend)
 
+## Reality Check (as of 2025-09-23)
+- Minimal API endpoints are mapped directly in `src/ActualGameSearch.Api/Program.cs` (no `Endpoints/` folder yet).
+- Repositories: `CosmosGamesRepository` and `CosmosReviewsRepository` live under `src/ActualGameSearch.Api/Data/`; in-memory fallbacks also present.
+- Embedding adapter: `TextEmbeddingService` under `src/ActualGameSearch.Core/Embeddings/` using Ollama HTTP; `NoopEmbeddingService` for tests.
+- Tests: Contract and Integration tests exist and currently pass against the implemented endpoints with `{ ok, data.items }` payloads.
+
 ## Phase 0: Outline & Research
 1) Unknowns extracted: 
 - Normalization rules specifics (dates/locales/tags/platforms) → capture in data dictionary.  

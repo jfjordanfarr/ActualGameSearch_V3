@@ -18,18 +18,31 @@ paths:
           required: true
           description: Search query text
         - in: query
+          name: top
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 10
+          description: Maximum number of items to return (current implementation cap is 50)
+        # Planned, not currently enforced in implementation
+        - in: query
           name: candidateCap
+          deprecated: true
           schema:
             type: integer
             minimum: 50
             maximum: 2000
             default: 200
+          description: Planned alias for result cap; not currently used by the API
         - in: query
           name: adultOnly
+          deprecated: true
           schema:
             type: boolean
         - in: query
           name: controller
+          deprecated: true
           schema:
             type: string
             enum: [none, partial, full]
@@ -64,19 +77,29 @@ paths:
           required: true
           description: Search query text
         - in: query
-          name: candidateCap
+          name: top
           schema:
             type: integer
-            minimum: 50
-            maximum: 2000
-            default: 500
+            minimum: 1
+            maximum: 50
+            default: 10
+          description: Maximum number of items to return (current implementation cap is 50)
+        - in: query
+          name: fields
+          schema:
+            type: string
+            enum: [full]
+          description: Optional flag to include full review text when set to 'full'
+        # Planned parameters for convergence (currently ignored by API)
         - in: query
           name: convergence.minReviewMatches
+          deprecated: true
           schema:
             type: integer
             minimum: 0
         - in: query
           name: convergence.requireGameAndReview
+          deprecated: true
           schema:
             type: boolean
       responses:
@@ -110,26 +133,46 @@ paths:
           required: true
           description: Search query text
         - in: query
+          name: top
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 25
+            default: 10
+          description: Maximum number of grouped games to return (current implementation cap is 25)
+        - in: query
+          name: fields
+          schema:
+            type: string
+            enum: [full]
+          description: Optional flag to include full review text within grouped results when set to 'full'
+        # Planned parameters (currently unused by API)
+        - in: query
           name: minReviews
+          deprecated: true
           schema:
             type: integer
             minimum: 0
         - in: query
           name: adultOnly
+          deprecated: true
           schema:
             type: boolean
         - in: query
           name: controller
+          deprecated: true
           schema:
             type: string
             enum: [none, partial, full]
         - in: query
           name: includeDLC
+          deprecated: true
           schema:
             type: boolean
             default: true
         - in: query
           name: candidateCap
+          deprecated: true
           schema:
             type: integer
             minimum: 50
@@ -137,15 +180,18 @@ paths:
             default: 500
         - in: query
           name: convergence.minReviewMatches
+          deprecated: true
           schema:
             type: integer
             minimum: 0
         - in: query
           name: convergence.requireGameAndReview
+          deprecated: true
           schema:
             type: boolean
         - in: query
           name: weights.semantic
+          deprecated: true
           schema:
             type: number
             minimum: 0
@@ -153,6 +199,7 @@ paths:
             default: 0.5
         - in: query
           name: weights.text
+          deprecated: true
           schema:
             type: number
             minimum: 0
@@ -182,6 +229,7 @@ paths:
   /api/similar/{gameId}:
     get:
       summary: Find similar games
+      description: Planned endpoint; not yet implemented in the current API build.
       parameters:
         - in: path
           name: gameId
@@ -255,6 +303,10 @@ components:
         excerpt:
           type: string
           nullable: true
+        fullText:
+          type: string
+          nullable: true
+          description: Included when `fields=full` is requested; otherwise may be null or omitted
         reviewMeta:
           type: object
           nullable: true

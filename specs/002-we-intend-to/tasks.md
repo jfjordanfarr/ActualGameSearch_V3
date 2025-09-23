@@ -195,3 +195,13 @@ Task: T027 Docs/data dictionary
 - [ ] Parallel tasks only touch independent files
 - [ ] Each task specifies exact file paths
 - [ ] No task modifies the same file as another [P] task
+
+---
+
+## Status Snapshot (2025-09-23)
+- Passing tests: Contract tests for `/api/search/games` and `/api/search/reviews` and Integration tests for preview/convergence assertions are green.
+- Implemented now: Minimal endpoints in `Program.cs`, in-memory repos for tests, Cosmos repos for real mode, embedding service, result envelope.
+- Gaps vs plan:
+  - Convergence query params exist in contracts but are not yet honored by API/services; mark as planned.
+  - Endpoint classes (`Endpoints/*.cs`) are not yet split; planned refactor later (T018–T020 remain pending, but functionality exists inline).
+  - Grouped search currently groups review candidates by game using vector search only; hybrid with games/reviews merge is planned.

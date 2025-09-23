@@ -138,3 +138,11 @@ similar games.
 - [x] Requirements generated
 - [x] Entities identified
 - [ ] Review checklist passed
+
+---
+
+## Reality Check (as of 2025-09-23)
+- Endpoints implemented: `/api/search/games`, `/api/search/reviews`, `/api/search`.
+- Implemented query params: `q` (all), `top` (cap), `fields=full` (reviews/grouped only). Planned params like `candidateCap`, `controller`, `adultOnly`, and explicit convergence filters are not yet wired in the API.
+- Result envelope: `{ ok, data, error }` matches contract tests and current implementation.
+- Aspire AppHost provisions Cosmos emulator and Ollama container; API falls back to in-memory repos in test mode.
