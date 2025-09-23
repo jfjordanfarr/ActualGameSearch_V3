@@ -7,6 +7,7 @@ using ActualGameSearch.ServiceDefaults;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using ActualGameSearch.Core.Services;
 
 namespace ActualGameSearch.Worker;
 
@@ -19,15 +20,18 @@ internal class Program
 
 		// Config defaults (can be overridden via appsettings or env)
 		var ollamaEndpoint = builder.Configuration["Ollama:Endpoint"] ?? "http://localhost:11434/";
+		if (!ollamaEndpoint.EndsWith('/')) ollamaEndpoint += "/";
 		var ollamaModel = builder.Configuration["Ollama:Model"] ?? "nomic-embed-text:v1.5";
 		var cosmosConn = builder.Configuration.GetConnectionString("cosmos-db");
 		var dbName = builder.Configuration["Cosmos:Database"] ?? "actualgames";
 		var gamesContainer = builder.Configuration["Cosmos:GamesContainer"] ?? "games";
 		var reviewsContainer = builder.Configuration["Cosmos:ReviewsContainer"] ?? "reviews";
-		var vectorPath = builder.Configuration["Cosmos:Vector:Path"] ?? "/vector";
+	var vectorPath = builder.Configuration["Cosmos:Vector:Path"] ?? "/vector";
 		var dims = int.TryParse(builder.Configuration["Cosmos:Vector:Dimensions"], out var d) ? d : 768;
 	var distance = (builder.Configuration["Cosmos:Vector:DistanceFunction"] ?? "cosine").ToLowerInvariant();
 	var indexType = (builder.Configuration["Cosmos:Vector:IndexType"] ?? "diskann").ToLowerInvariant();
+	var formPref = CosmosVectorQueryHelper.ParsePreference(builder.Configuration["Cosmos:Vector:DistanceForm"]);
+	var maxReviewsPerGame = int.TryParse(builder.Configuration["Seeding:MaxReviewsPerGame"], out var mrg) ? mrg : 50;
 
 	// Services
 	builder.Services.AddHttpClient();
@@ -43,7 +47,7 @@ internal class Program
 		// Attempt to pre-pull the embedding model in the Ollama container (best-effort)
 		try
 		{
-			var pullUrl = new Uri(new Uri(ollamaEndpoint), "/api/pull");
+				var pullUrl = new Uri(new Uri(ollamaEndpoint), "api/pull");
 			var body = System.Text.Json.JsonSerializer.Serialize(new { name = ollamaModel });
 			using var req = new HttpRequestMessage(HttpMethod.Post, pullUrl)
 			{
@@ -167,7 +171,7 @@ internal class Program
 
 
 				// Prefer real user reviews when available; fallback to review-like snippets from the app description
-				var realReviews = await TryFetchSteamReviewsAsync(http, appId, max: 3);
+				var realReviews = await TryFetchSteamReviewsPaginatedAsync(http, appId, maxReviewsPerGame);
 				var texts = realReviews.Count > 0 ? realReviews.Select(r => r.text).ToList() : BuildReviewLikeSnippets(dapp);
 				if (texts.Count == 0) continue;
 
@@ -233,28 +237,50 @@ internal class Program
 		// Smoke vector search
 	if (seededGames.Count > 0 && reviews is not null)
 		{
-			try
+			var probe = "co-op puzzle with portals and witty writing";
+			var vec = (await GenerateVectorsAsync(http, ollamaEndpoint, ollamaModel, new List<string> { probe }, dims)).First();
+
+			async Task<bool> TryRunAsync(CosmosVectorQueryHelper.DistanceFormResolved useForm)
 			{
-				var probe = "co-op puzzle with portals and witty writing";
-				var vec = (await GenerateVectorsAsync(http, ollamaEndpoint, ollamaModel, new List<string> { probe }, dims)).First();
-				// Cosmos Emulator currently supports 2-arg VectorDistance(vector, vector) when a vector policy defines the metric.
-				var sql = "SELECT TOP 5 c.id, c.gameTitle, VectorDistance(c.vector, @e) AS sim FROM c ORDER BY VectorDistance(c.vector, @e)";
-				var q = new QueryDefinition(sql).WithParameter("@e", vec);
-				using var it = reviews.GetItemQueryIterator<dynamic>(q);
-				Console.WriteLine("Top 5 semantic matches for probe:");
-				while (it.HasMoreResults)
+				try
 				{
-					var page = await it.ReadNextAsync();
-					foreach (var doc in page)
+					var expr = CosmosVectorQueryHelper.VectorDistanceExpr("@e", distance, useForm);
+					var sql = $"SELECT TOP 5 c.id, c.gameTitle, {expr} AS sim FROM c ORDER BY {expr}";
+					var q = new QueryDefinition(sql).WithParameter("@e", vec);
+					using var it = reviews.GetItemQueryIterator<dynamic>(q);
+					Console.WriteLine($"Top 5 semantic matches for probe ({(useForm == CosmosVectorQueryHelper.DistanceFormResolved.ThreeArg ? "3-arg" : "2-arg")})");
+					while (it.HasMoreResults)
 					{
-						Console.WriteLine($"  {doc.gameTitle}  sim={doc.sim}");
+						var page = await it.ReadNextAsync();
+						foreach (var doc in page)
+						{
+							Console.WriteLine($"  {doc.gameTitle}  sim={doc.sim}");
+						}
 					}
+					return true;
+				}
+				catch (CosmosException ex)
+				{
+					// If the emulator flipped support, try the alternate form once.
+					var msg = ex.Message ?? string.Empty;
+					var twoArgNotSupported = msg.Contains("Not supported function call VECTORDISTANCE with 2 arguments", StringComparison.OrdinalIgnoreCase);
+					var threeArgNotSupported = msg.Contains("Not supported function call VECTORDISTANCE with 3 arguments", StringComparison.OrdinalIgnoreCase);
+					if (twoArgNotSupported || threeArgNotSupported)
+					{
+						var alt = useForm == CosmosVectorQueryHelper.DistanceFormResolved.TwoArg
+							? CosmosVectorQueryHelper.DistanceFormResolved.ThreeArg
+							: CosmosVectorQueryHelper.DistanceFormResolved.TwoArg;
+						Console.WriteLine($"VectorDistance form '{(useForm == CosmosVectorQueryHelper.DistanceFormResolved.ThreeArg ? "3-arg" : "2-arg")}' not supported; retrying with '{(alt == CosmosVectorQueryHelper.DistanceFormResolved.ThreeArg ? "3-arg" : "2-arg")}'.");
+						return await TryRunAsync(alt);
+					}
+					Console.WriteLine($"Vector query failed: {ex.Message}. Ensure the reviews container has a vector policy and index.");
+					return false;
 				}
 			}
-			catch (CosmosException ex)
-			{
-				Console.WriteLine($"Vector query failed: {ex.Message}. Ensure the reviews container has a vector policy and index.");
-			}
+
+			// Resolve preferred form then attempt; the helper caches per-container.
+			var resolved = await CosmosVectorQueryHelper.GetOrResolveFormAsync(reviews, dbName!, reviewsContainer!, distance, vec, formPref);
+			await TryRunAsync(resolved);
 		}
 	}
 
@@ -315,7 +341,40 @@ internal class Program
 		}
 	}
 
-	private record SteamReviewsResponse(string? success, SteamReviewItem[] reviews);
+	// New: paginate reviews using Steam cursor until reaching max or pages exhausted
+	private static async Task<List<SteamUserReview>> TryFetchSteamReviewsPaginatedAsync(HttpClient http, int appId, int maxTotal)
+	{
+		var results = new List<SteamUserReview>();
+		string cursor = "*"; // initial cursor
+		int pageSize = Math.Clamp(maxTotal >= 100 ? 100 : maxTotal, 10, 100);
+		int pages = 0;
+		while (results.Count < maxTotal && pages < 20)
+		{
+			try
+			{
+				var url = $"https://store.steampowered.com/appreviews/{appId}?json=1&filter=recent&language=english&purchase_type=all&num_per_page={pageSize}&cursor={Uri.EscapeDataString(cursor)}";
+				using var resp = await http.GetAsync(url);
+				if (!resp.IsSuccessStatusCode) break;
+				var payload = await resp.Content.ReadFromJsonAsync<SteamReviewsResponse>();
+				if (payload?.reviews == null || payload.reviews.Length == 0) break;
+				foreach (var r in payload.reviews)
+				{
+					if (string.IsNullOrWhiteSpace(r.review)) continue;
+					var created = DateTimeOffset.FromUnixTimeSeconds(r.timestamp_created);
+					results.Add(new SteamUserReview(r.recommendationid ?? Guid.NewGuid().ToString("n"), r.review, r.votes_up, created));
+					if (results.Count >= maxTotal) break;
+				}
+				if (results.Count >= maxTotal) break;
+				if (string.IsNullOrEmpty(payload.cursor) || payload.cursor == cursor) break;
+				cursor = payload.cursor;
+				pages++;
+			}
+			catch { break; }
+		}
+		return results;
+	}
+
+	private record SteamReviewsResponse(string? success, SteamReviewItem[] reviews, string? cursor);
 	private record SteamReviewItem(string? recommendationid, string review, int votes_up, int votes_funny, long timestamp_created);
 	private record SteamUserReview(string id, string text, int votesUp, DateTimeOffset createdAt);
 	private static string StripHtml(string html)
@@ -406,21 +465,21 @@ internal class Program
 		}
 
 		// 1) Ollama /api/embeddings with "input"
-		var t1 = await TryCallAsync("/api/embeddings", new { model, input = texts }, ProjectEmbeddingsData);
+		var t1 = await TryCallAsync("api/embeddings", new { model, input = texts }, ProjectEmbeddingsData);
 		if (t1.ok)
 		{
 			Console.WriteLine($"Ollama embeddings via /api/embeddings input (dims={t1.vecs.FirstOrDefault()?.Length ?? 0})");
 			return t1.vecs;
 		}
 		// 2) Ollama /api/embeddings with "prompt" (per model docs)
-		var t2 = await TryCallAsync("/api/embeddings", new { model, prompt = texts }, ProjectEmbeddingsData);
+		var t2 = await TryCallAsync("api/embeddings", new { model, prompt = texts }, ProjectEmbeddingsData);
 		if (t2.ok)
 		{
 			Console.WriteLine($"Ollama embeddings via /api/embeddings prompt (dims={t2.vecs.FirstOrDefault()?.Length ?? 0})");
 			return t2.vecs;
 		}
 		// 3) Ollama /api/embed with "input"
-		var t3 = await TryCallAsync("/api/embed", new { model, input = texts }, ProjectEmbedArray);
+		var t3 = await TryCallAsync("api/embed", new { model, input = texts }, ProjectEmbedArray);
 		if (t3.ok)
 		{
 			Console.WriteLine($"Ollama embeddings via /api/embed (dims={t3.vecs.FirstOrDefault()?.Length ?? 0})");

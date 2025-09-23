@@ -7,6 +7,7 @@ using OpenTelemetry.Resources;
 using OpenTelemetry.Logs;
 using Microsoft.Extensions.Logging;
 using OpenTelemetry.Exporter;
+using System.Diagnostics;
 
 namespace ActualGameSearch.ServiceDefaults;
 
@@ -27,8 +28,23 @@ public static class ServiceDefaultsExtensions
             o.IncludeScopes = true;
             o.IncludeFormattedMessage = true;
             o.ParseStateValues = true;
-            o.AddOtlpExporter();
+            var httpOtlp = Environment.GetEnvironmentVariable("ASPIRE_DASHBOARD_OTLP_HTTP_ENDPOINT_URL");
+            if (!string.IsNullOrWhiteSpace(httpOtlp) && Uri.TryCreate(httpOtlp, UriKind.Absolute, out var httpOtlpUri))
+            {
+                o.AddOtlpExporter(exp =>
+                {
+                    exp.Endpoint = httpOtlpUri;
+                    exp.Protocol = OtlpExportProtocol.HttpProtobuf;
+                });
+            }
+            else
+            {
+                o.AddOtlpExporter();
+            }
         });
+
+        // Register custom ActivitySources for manual spans (optional)
+        var activitySourceNames = new[] { "AGS.Api", "AGS.Worker" };
 
         // Wire OTLP export to the Aspire Dashboard's OTLP endpoint when available
         builder.Services.AddOpenTelemetry()
@@ -36,11 +52,28 @@ public static class ServiceDefaultsExtensions
             .WithTracing(t => t
                 .AddAspNetCoreInstrumentation()
                 .AddHttpClientInstrumentation()
-                .AddOtlpExporter())
+                .AddSource(activitySourceNames)
+                .AddOtlpExporter(exp =>
+                {
+                    var httpOtlp = Environment.GetEnvironmentVariable("ASPIRE_DASHBOARD_OTLP_HTTP_ENDPOINT_URL");
+                    if (!string.IsNullOrWhiteSpace(httpOtlp) && Uri.TryCreate(httpOtlp, UriKind.Absolute, out var httpOtlpUri))
+                    {
+                        exp.Endpoint = httpOtlpUri;
+                        exp.Protocol = OtlpExportProtocol.HttpProtobuf;
+                    }
+                }))
             .WithMetrics(m => m
                 .AddRuntimeInstrumentation()
                 .AddAspNetCoreInstrumentation()
-                .AddOtlpExporter());
+                .AddOtlpExporter(exp =>
+                {
+                    var httpOtlp = Environment.GetEnvironmentVariable("ASPIRE_DASHBOARD_OTLP_HTTP_ENDPOINT_URL");
+                    if (!string.IsNullOrWhiteSpace(httpOtlp) && Uri.TryCreate(httpOtlp, UriKind.Absolute, out var httpOtlpUri))
+                    {
+                        exp.Endpoint = httpOtlpUri;
+                        exp.Protocol = OtlpExportProtocol.HttpProtobuf;
+                    }
+                }));
 
         return builder;
     }

@@ -34,16 +34,16 @@ var api = builder.AddProject<Projects.ActualGameSearch_Api>("api")
 					  .WithReference(cosmos)
 					  .WithReference(db)
 					  .WaitFor(db)
-				 // Route Ollama endpoint into the API via configuration
-				 .WithEnvironment("Ollama:Endpoint", "http://ollama:11434/")
+				 // Route Ollama endpoint into the API via environment using the discovered endpoint
+				 .WithEnvironment("Ollama:Endpoint", ollama.GetEndpoint("http"))
 				 .WaitFor(ollama);
 
 var worker = builder.AddProject<Projects.ActualGameSearch_Worker>("worker")
 						  .WithReference(cosmos)
 						  .WithReference(db)
 						  .WaitFor(db)
-					// Route Ollama endpoint into the worker via configuration
-					.WithEnvironment("Ollama:Endpoint", "http://ollama:11434/")
+					// Route Ollama endpoint into the Worker via environment using the discovered endpoint
+					.WithEnvironment("Ollama:Endpoint", ollama.GetEndpoint("http"))
 					.WaitFor(ollama);
 
 builder.Build().Run();
