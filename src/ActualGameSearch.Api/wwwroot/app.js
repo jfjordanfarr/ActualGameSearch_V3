@@ -14,8 +14,9 @@ document.getElementById('search-form').addEventListener('submit', async (e) => {
   reviews.innerHTML = '';
 
   if (gamesResp.ok) {
-    const data = await gamesResp.json();
-    for (const g of data.items ?? []) {
+    const json = await gamesResp.json();
+    const items = json?.data?.items ?? [];
+    for (const g of items) {
       const li = document.createElement('li');
       li.className = 'list-group-item';
       li.textContent = `${g.gameTitle ?? g.title ?? g.gameId}`;
@@ -24,8 +25,9 @@ document.getElementById('search-form').addEventListener('submit', async (e) => {
   }
 
   if (reviewsResp.ok) {
-    const data = await reviewsResp.json();
-    for (const r of data.items ?? []) {
+    const json = await reviewsResp.json();
+    const items = json?.data?.items ?? [];
+    for (const r of items) {
       const li = document.createElement('li');
       li.className = 'list-group-item';
       li.textContent = `${r.excerpt ?? r.reviewId}`;

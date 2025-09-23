@@ -8,6 +8,9 @@ internal sealed class InMemoryGamesRepository : IGamesRepository
 {
     public Task<IReadOnlyList<GameSummary>> SearchAsync(string query, int top, CancellationToken cancellationToken = default)
         => Task.FromResult<IReadOnlyList<GameSummary>>(Array.Empty<GameSummary>());
+
+    public Task<IReadOnlyList<GameSummary>> HybridSearchAsync(string query, float[] queryVector, int top, CancellationToken cancellationToken = default)
+        => Task.FromResult<IReadOnlyList<GameSummary>>(Array.Empty<GameSummary>());
 }
 
 internal sealed class InMemoryReviewsRepository : IReviewsRepository

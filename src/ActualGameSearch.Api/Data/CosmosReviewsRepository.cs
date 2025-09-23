@@ -13,6 +13,7 @@ public sealed class CosmosReviewsRepository : IReviewsRepository
     private readonly string _dbName = "actualgames";
     private readonly string _containerName = "reviews";
     private readonly CosmosVectorQueryHelper.DistanceFormPreference _formPref;
+    private readonly string _vecPath;
 
     public CosmosReviewsRepository(CosmosClient client, IConfiguration config)
     {
@@ -24,7 +25,8 @@ public sealed class CosmosReviewsRepository : IReviewsRepository
             "dotproduct" or "dot_product" => "dotproduct",
             _ => "cosine"
         };
-        _formPref = CosmosVectorQueryHelper.ParsePreference(config["Cosmos:Vector:DistanceForm"]);
+    _formPref = CosmosVectorQueryHelper.ParsePreference(config["Cosmos:Vector:DistanceForm"]);
+    _vecPath = config["Cosmos:Vector:Path"] ?? "/vector";
     }
 
     public async Task<IReadOnlyList<Candidate>> VectorSearchAsync(float[] queryVector, int top, CancellationToken cancellationToken = default)
@@ -46,9 +48,10 @@ public sealed class CosmosReviewsRepository : IReviewsRepository
                     double semanticScore = (double?)doc.semanticScore ?? 0d;
                     double combinedScore = (double?)doc.similarity ?? 0d; // temporary: using similarity as combined
                     string? excerpt = doc.excerpt;
+                    string? fullText = doc.fullText;
                     int helpful = (int?)doc.helpfulVotes ?? 0;
                     DateTimeOffset createdAt = DateTimeOffset.TryParse((string?)doc.createdAt, out var dto) ? dto : DateTimeOffset.UnixEpoch;
-                    results.Add(new Candidate(gameId, gameTitle, reviewId, textScore, semanticScore, combinedScore, excerpt, new ReviewMeta(helpful, createdAt)));
+                    results.Add(new Candidate(gameId, gameTitle, reviewId, textScore, semanticScore, combinedScore, excerpt, new ReviewMeta(helpful, createdAt)) { FullText = fullText });
                 }
             }
             return results;
@@ -56,9 +59,9 @@ public sealed class CosmosReviewsRepository : IReviewsRepository
 
         // Resolve and cache supported form for this container
         var probeVec = queryVector.Length > 0 ? queryVector : new float[] { 0f };
-        var resolved = await CosmosVectorQueryHelper.GetOrResolveFormAsync(_container, _dbName, _containerName, _distanceFn, probeVec, _formPref, cancellationToken);
-        var expr = CosmosVectorQueryHelper.VectorDistanceExpr("@embedding", _distanceFn, resolved);
-        var sql = $"SELECT TOP {top} c.id AS reviewId, c.gameId, c.gameTitle, c.textScore, c.semanticScore, c.excerpt, c.helpfulVotes, c.createdAt, {expr} AS similarity FROM c ORDER BY {expr}";
+    var resolved = await CosmosVectorQueryHelper.GetOrResolveFormAsync(_container, _dbName, _containerName, _distanceFn, probeVec, _formPref, cancellationToken, _vecPath);
+    var expr = CosmosVectorQueryHelper.VectorDistanceExpr("@embedding", _distanceFn, resolved, _vecPath);
+        var sql = $"SELECT TOP {top} c.id AS reviewId, c.gameId, c.gameTitle, c.textScore, c.semanticScore, c.excerpt, c.fullText, c.helpfulVotes, c.createdAt, {expr} AS similarity FROM c ORDER BY {expr}";
         return await ExecuteAsync(sql);
     }
 

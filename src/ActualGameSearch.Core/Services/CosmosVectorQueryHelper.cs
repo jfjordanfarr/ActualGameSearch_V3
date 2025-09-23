@@ -13,13 +13,25 @@ public static class CosmosVectorQueryHelper
 
     private static readonly ConcurrentDictionary<string, DistanceFormResolved> Cache = new();
 
-    private static string CacheKey(string database, string container, string distanceFn)
-        => $"{database}/{container}:{distanceFn.ToLowerInvariant()}";
+    private static string CacheKey(string database, string container, string distanceFn, string? fieldPath)
+    {
+        // Normalize field path so that different vector fields (e.g., /vector, /gvector, /pvector)
+        // do not cross-contaminate cache entries across containers or queries.
+        var normPath = string.IsNullOrWhiteSpace(fieldPath)
+            ? "vector" // default implicit path used by helper when null
+            : fieldPath!.Trim().TrimStart('/').ToLowerInvariant();
+        return $"{database}/{container}:{distanceFn.ToLowerInvariant()}@{normPath}";
+    }
 
-    public static string VectorDistanceExpr(string vectorParamName, string distanceFn, DistanceFormResolved form)
-        => form == DistanceFormResolved.ThreeArg
-            ? $"VectorDistance(c.vector, {vectorParamName}, '{NormalizeDistanceFn(distanceFn)}')"
-            : $"VectorDistance(c.vector, {vectorParamName})";
+    public static string VectorDistanceExpr(string vectorParamName, string distanceFn, DistanceFormResolved form, string? fieldPath = null)
+    {
+            var vpath = string.IsNullOrWhiteSpace(fieldPath)
+                ? "c.vector"
+                : (fieldPath!.StartsWith("c.") ? fieldPath! : $"c.{fieldPath!.TrimStart('/')}");
+        return form == DistanceFormResolved.ThreeArg
+            ? $"VectorDistance({vpath}, {vectorParamName}, '{NormalizeDistanceFn(distanceFn)}')"
+            : $"VectorDistance({vpath}, {vectorParamName})";
+    }
 
     private static string NormalizeDistanceFn(string fn)
         => fn switch
@@ -44,9 +56,10 @@ public static class CosmosVectorQueryHelper
         string distanceFn,
         float[] probeVector,
         DistanceFormPreference preference,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        string? fieldPath = null)
     {
-        var key = CacheKey(database, containerName, distanceFn);
+        var key = CacheKey(database, containerName, distanceFn, fieldPath);
         if (preference == DistanceFormPreference.TwoArg)
             return Cache.GetOrAdd(key, DistanceFormResolved.TwoArg);
         if (preference == DistanceFormPreference.ThreeArg)
@@ -55,13 +68,13 @@ public static class CosmosVectorQueryHelper
         if (Cache.TryGetValue(key, out var cached)) return cached;
 
         // Probe: prefer 3-arg first, fall back to 2-arg on 400/500 NotSupported
-        if (await ProbeAsync(container, probeVector, distanceFn, threeArg: true, ct))
+        if (await ProbeAsync(container, probeVector, distanceFn, threeArg: true, ct, fieldPath))
         {
             Cache[key] = DistanceFormResolved.ThreeArg;
             return DistanceFormResolved.ThreeArg;
         }
         // else try 2-arg
-        if (await ProbeAsync(container, probeVector, distanceFn, threeArg: false, ct))
+        if (await ProbeAsync(container, probeVector, distanceFn, threeArg: false, ct, fieldPath))
         {
             Cache[key] = DistanceFormResolved.TwoArg;
             return DistanceFormResolved.TwoArg;
@@ -72,13 +85,16 @@ public static class CosmosVectorQueryHelper
         return DistanceFormResolved.TwoArg;
     }
 
-    private static async Task<bool> ProbeAsync(Container container, float[] vec, string distanceFn, bool threeArg, CancellationToken ct)
+    private static async Task<bool> ProbeAsync(Container container, float[] vec, string distanceFn, bool threeArg, CancellationToken ct, string? fieldPath = null)
     {
         try
         {
+            var vpath = string.IsNullOrWhiteSpace(fieldPath)
+                ? "c.vector"
+                : (fieldPath!.StartsWith("c.") ? fieldPath! : $"c.{fieldPath!.TrimStart('/')}");
             var expr = threeArg
-                ? $"VectorDistance(c.vector, @e, '{NormalizeDistanceFn(distanceFn)}')"
-                : "VectorDistance(c.vector, @e)";
+                ? $"VectorDistance({vpath}, @e, '{NormalizeDistanceFn(distanceFn)}')"
+                : $"VectorDistance({vpath}, @e)";
             // Cheap probe: order by expression, request TOP 1
             var sql = $"SELECT TOP 1 c.id FROM c ORDER BY {expr}";
             var q = new QueryDefinition(sql).WithParameter("@e", vec);

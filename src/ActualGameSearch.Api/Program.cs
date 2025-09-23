@@ -1,8 +1,6 @@
 using ActualGameSearch.ServiceDefaults;
 using ActualGameSearch.Core.Primitives;
 using ActualGameSearch.Core.Models;
-using Microsoft.Extensions.AI;
-using OllamaSharp;
 using ActualGameSearch.Core.Embeddings;
 using ActualGameSearch.Core.Repositories;
 using ActualGameSearch.Api.Data;
@@ -11,6 +9,13 @@ using Microsoft.Azure.Cosmos;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.AddServiceDefaults();
+
+// Optionally register CORS services (dev-only, opt-in)
+var devCorsEnabled = builder.Configuration.GetValue<bool>("DevCors:Enabled", false);
+if (devCorsEnabled)
+{
+	builder.Services.AddCors();
+}
 
 // Determine if we have Cosmos connection info (AppHost/discovery) or we're in test mode
 bool Has(string key) => !string.IsNullOrWhiteSpace(builder.Configuration[key]);
@@ -28,11 +33,17 @@ if (forceInMemory) hasCosmos = false;
 
 if (hasCosmos)
 {
-	// Embeddings via Ollama in normal mode
+	// Embeddings via Ollama HTTP in normal mode
 	var ollamaEndpoint = builder.Configuration["Ollama:Endpoint"] ?? "http://localhost:11434/";
 	var ollamaModel = builder.Configuration["Ollama:Model"] ?? "nomic-embed-text:v1.5";
-	builder.Services.AddSingleton<IEmbeddingGenerator<string, Embedding<float>>>(_ => new OllamaApiClient(new Uri(ollamaEndpoint), ollamaModel));
-	builder.Services.AddSingleton<ITextEmbeddingService, TextEmbeddingService>();
+	var dims = int.TryParse(builder.Configuration["Cosmos:Vector:Dimensions"], out var d) ? d : 768;
+	var allowDeterministicFallback = builder.Configuration.GetValue<bool>("Embeddings:AllowDeterministicFallback", false);
+	builder.Services.AddHttpClient();
+	builder.Services.AddSingleton<ITextEmbeddingService>(sp =>
+	{
+		var http = sp.GetRequiredService<IHttpClientFactory>().CreateClient();
+		return new TextEmbeddingService(http, ollamaEndpoint, ollamaModel, dims, allowDeterministicFallback);
+	});
 
 	// Cosmos client via Aspire
 	builder.AddAzureCosmosClient("cosmos-db");
@@ -50,25 +61,36 @@ else
 
 var app = builder.Build();
 
+// Optional Dev CORS: opt-in via configuration to allow local/static frontends; disabled by default and in tests
+if (devCorsEnabled)
+{
+	app.UseCors(policy => policy
+		.AllowAnyOrigin()
+		.AllowAnyHeader()
+		.AllowAnyMethod());
+}
+
 app.UseDefaultFiles();
 app.UseStaticFiles();
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 
-// Games search (text)
-app.MapGet("/api/search/games", async (string? q, int? top, IGamesRepository gamesRepo, CancellationToken ct) =>
+// Games search (hybrid: title contains + game vectors)
+app.MapGet("/api/search/games", async (string? q, int? top, IGamesRepository gamesRepo, ITextEmbeddingService embed, CancellationToken ct) =>
 {
 	if (string.IsNullOrWhiteSpace(q))
 	{
 		return Results.BadRequest(Result<object>.Fail("missing_q", "Query parameter 'q' is required."));
 	}
 	var limit = top is int t && t > 0 && t <= 50 ? t : 10;
-	var items = await gamesRepo.SearchAsync(q, limit, ct);
+	// Generate query vector and run hybrid search
+	var vec = await embed.GenerateVectorAsync(q, ct);
+	var items = await gamesRepo.HybridSearchAsync(q, vec.ToArray(), limit, ct);
 	return Results.Ok(Result<GamesSearchResponse>.Success(new GamesSearchResponse(items)));
 });
 
 // Reviews search (semantic/vector-first)
-app.MapGet("/api/search/reviews", async (string? q, int? top, ITextEmbeddingService embed, IReviewsRepository reviewsRepo, CancellationToken ct) =>
+app.MapGet("/api/search/reviews", async (string? q, int? top, string? fields, ITextEmbeddingService embed, IReviewsRepository reviewsRepo, CancellationToken ct) =>
 {
 	if (string.IsNullOrWhiteSpace(q))
 	{
@@ -77,11 +99,16 @@ app.MapGet("/api/search/reviews", async (string? q, int? top, ITextEmbeddingServ
 	var limit = top is int t && t > 0 && t <= 50 ? t : 10;
 	var vec = await embed.GenerateVectorAsync(q, ct);
 	var items = await reviewsRepo.VectorSearchAsync(vec.ToArray(), limit, ct);
+	var includeFull = !string.IsNullOrWhiteSpace(fields) && fields.Contains("full", StringComparison.OrdinalIgnoreCase);
+	if (!includeFull)
+	{
+		items = items.Select(i => i with { FullText = null }).ToList();
+	}
 	return Results.Ok(Result<ReviewsSearchResponse>.Success(new ReviewsSearchResponse(items)));
 });
 
 // Grouped search (by game, using semantic review matches)
-app.MapGet("/api/search", async (string? q, int? top, ITextEmbeddingService embed, IReviewsRepository reviewsRepo, CancellationToken ct) =>
+app.MapGet("/api/search", async (string? q, int? top, string? fields, ITextEmbeddingService embed, IReviewsRepository reviewsRepo, CancellationToken ct) =>
 {
 	if (string.IsNullOrWhiteSpace(q))
 	{
@@ -91,6 +118,11 @@ app.MapGet("/api/search", async (string? q, int? top, ITextEmbeddingService embe
 	var vec = await embed.GenerateVectorAsync(q, ct);
 	// Fetch a larger candidate set to group effectively
 	var flat = await reviewsRepo.VectorSearchAsync(vec.ToArray(), Math.Max(groupLimit * 5, 30), ct);
+	var includeFull = !string.IsNullOrWhiteSpace(fields) && fields.Contains("full", StringComparison.OrdinalIgnoreCase);
+	if (!includeFull)
+	{
+		flat = flat.Select(i => i with { FullText = null }).ToList();
+	}
 	// Group by game
 	var grouped = flat
 		.GroupBy(c => (c.GameId, c.GameTitle))

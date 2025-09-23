@@ -11,4 +11,8 @@ public sealed record Candidate(
     double CombinedScore,
     string? Excerpt,
     ReviewMeta? ReviewMeta
-);
+)
+{
+    // Optional: include only when requested via API (fields=full)
+    public string? FullText { get; init; }
+}

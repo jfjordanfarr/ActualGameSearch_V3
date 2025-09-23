@@ -1,7 +1,12 @@
 ﻿using System;
 using System.Linq;
 using System.Net.Http.Json;
+using System.Net.Http.Headers;
 using System.Text;
+using System.Diagnostics.Metrics;
+using ActualGameSearch.Worker.Embeddings;
+using ActualGameSearch.Worker.Models;
+using ActualGameSearch.Worker.Probes;
 using Microsoft.Azure.Cosmos;
 using ActualGameSearch.ServiceDefaults;
 using Microsoft.Extensions.Configuration;
@@ -26,12 +31,28 @@ internal class Program
 		var dbName = builder.Configuration["Cosmos:Database"] ?? "actualgames";
 		var gamesContainer = builder.Configuration["Cosmos:GamesContainer"] ?? "games";
 		var reviewsContainer = builder.Configuration["Cosmos:ReviewsContainer"] ?? "reviews";
+		var patchNotesContainer = builder.Configuration["Cosmos:PatchNotesContainer"] ?? "patchnotes";
 	var vectorPath = builder.Configuration["Cosmos:Vector:Path"] ?? "/vector";
+	var gamesVectorPath = builder.Configuration["Cosmos:GamesVector:Path"] ?? "/gvector";
+	var patchVectorPath = builder.Configuration["Cosmos:PatchVector:Path"] ?? "/pvector";
 		var dims = int.TryParse(builder.Configuration["Cosmos:Vector:Dimensions"], out var d) ? d : 768;
 	var distance = (builder.Configuration["Cosmos:Vector:DistanceFunction"] ?? "cosine").ToLowerInvariant();
 	var indexType = (builder.Configuration["Cosmos:Vector:IndexType"] ?? "diskann").ToLowerInvariant();
 	var formPref = CosmosVectorQueryHelper.ParsePreference(builder.Configuration["Cosmos:Vector:DistanceForm"]);
-	var maxReviewsPerGame = int.TryParse(builder.Configuration["Seeding:MaxReviewsPerGame"], out var mrg) ? mrg : 50;
+	var maxReviewsPerGame = int.TryParse(builder.Configuration["Seeding:MaxReviewsPerGame"], out var mrg) ? mrg : 200;
+	var failOnNoReviews = builder.Configuration.GetValue<bool>("Seeding:FailOnNoReviews", true);
+	var minReviewCount = int.TryParse(builder.Configuration["Seeding:MinReviewCount"], out var mrc) ? mrc : 10; // legacy, superseded by MinQualifiedReviews
+	var minQualifiedReviews = int.TryParse(builder.Configuration["Seeding:MinQualifiedReviews"], out var mqr) ? mqr : 5;
+	var minUniqueWordsPerReview = int.TryParse(builder.Configuration["Seeding:MinUniqueWordsPerReview"], out var muw) ? muw : 20;
+	var requireSteamPurchase = builder.Configuration.GetValue<bool>("Seeding:RequireSteamPurchase", true);
+	var allowDeterministicFallback = builder.Configuration.GetValue<bool>("Embeddings:AllowDeterministicFallback", false);
+	var embNumCtx = int.TryParse(builder.Configuration["Embeddings:NumCtx"], out var nc) ? nc : 2048;
+	var embMaxBatch = int.TryParse(builder.Configuration["Embeddings:MaxBatch"], out var mb) ? mb : 64;
+	var embHttpTimeoutSeconds = int.TryParse(builder.Configuration["Embeddings:HttpTimeoutSeconds"], out var ts) ? ts : 180;
+	var samplingEnabled = builder.Configuration.GetValue<bool>("Sampling:Enabled", true);
+	var samplingCount = int.TryParse(builder.Configuration["Sampling:Count"], out var sc) ? sc : 50;
+	var patchIngestEnabled = builder.Configuration.GetValue<bool>("PatchNotes:Enabled", true);
+	var maxPatchNotesPerGame = int.TryParse(builder.Configuration["PatchNotes:MaxPerGame"], out var mpn) ? mpn : 10;
 
 	// Services
 	builder.Services.AddHttpClient();
@@ -43,6 +64,14 @@ internal class Program
 		using var host = builder.Build();
 
 		var http = host.Services.GetRequiredService<IHttpClientFactory>().CreateClient();
+		http.Timeout = TimeSpan.FromSeconds(Math.Clamp(embHttpTimeoutSeconds, 30, 600));
+		// Set a friendly User-Agent and Accept to avoid being blocked or served atypical responses
+		try
+		{
+			http.DefaultRequestHeaders.UserAgent.ParseAdd("ActualGameSearch/1.0 (+https://actualgamesearch.com)");
+			http.DefaultRequestHeaders.Accept.ParseAdd("application/json");
+		}
+		catch { /* headers may be set already in some hosts */ }
 
 		// Attempt to pre-pull the embedding model in the Ollama container (best-effort)
 		try
@@ -65,6 +94,7 @@ internal class Program
 		// DB and containers
 		Container? games = null;
 		Container? reviews = null;
+		Container? patchnotes = null;
 		Database? db = null;
 		if (cosmos is not null)
 		{
@@ -75,7 +105,41 @@ internal class Program
 				try
 				{
 					db = (await cosmos.CreateDatabaseIfNotExistsAsync(dbName)).Database;
-					games = (await db.CreateContainerIfNotExistsAsync(new ContainerProperties(gamesContainer, "/id"))).Container;
+					// Ensure games container exists WITH VECTOR POLICY for game embeddings
+					var gameEmbeddings = new List<Microsoft.Azure.Cosmos.Embedding>
+					{
+						new Microsoft.Azure.Cosmos.Embedding
+						{
+							Path = gamesVectorPath,
+							DataType = VectorDataType.Float32,
+							DistanceFunction = distance == "euclidean" ? DistanceFunction.Euclidean :
+											   (distance == "dotproduct" || distance == "dot_product") ? DistanceFunction.DotProduct :
+											   DistanceFunction.Cosine,
+							Dimensions = dims
+						}
+					};
+
+					var gamesProps = new ContainerProperties(gamesContainer, "/id")
+					{
+						VectorEmbeddingPolicy = new VectorEmbeddingPolicy(new System.Collections.ObjectModel.Collection<Microsoft.Azure.Cosmos.Embedding>(gameEmbeddings)),
+						IndexingPolicy = new IndexingPolicy
+						{
+							IncludedPaths = { new IncludedPath { Path = "/*" } },
+							ExcludedPaths = { new ExcludedPath { Path = $"{gamesVectorPath}/*" } },
+							VectorIndexes =
+							{
+								new VectorIndexPath
+								{
+									Path = gamesVectorPath,
+									Type = indexType == "flat" ? VectorIndexType.Flat :
+										   (indexType == "quantizedflat" || indexType == "quantized_flat") ? VectorIndexType.QuantizedFlat :
+										   VectorIndexType.DiskANN
+								}
+							}
+						}
+					};
+
+					games = (await db.CreateContainerIfNotExistsAsync(gamesProps)).Container;
 				}
 				catch (Exception ex)
 				{
@@ -137,65 +201,205 @@ internal class Program
 			}
 		}
 
-		// Select a few Steam app IDs
-		var appIds = new[] { 620, 570, 440 }; // Portal 2, Dota 2, Team Fortress 2
-	var seededGames = new List<dynamic>();
+		// Ensure patchnotes container exists WITH VECTOR POLICY
+		if (cosmos is not null)
+		{
+			try
+			{
+				var pembeddings = new List<Microsoft.Azure.Cosmos.Embedding>
+				{
+					new Microsoft.Azure.Cosmos.Embedding
+					{
+						Path = patchVectorPath,
+						DataType = VectorDataType.Float32,
+						DistanceFunction = distance == "euclidean" ? DistanceFunction.Euclidean :
+										   (distance == "dotproduct" || distance == "dot_product") ? DistanceFunction.DotProduct :
+										   DistanceFunction.Cosine,
+						Dimensions = dims
+					}
+				};
+
+				var pprops = new ContainerProperties(patchNotesContainer, "/id")
+				{
+					VectorEmbeddingPolicy = new VectorEmbeddingPolicy(new System.Collections.ObjectModel.Collection<Microsoft.Azure.Cosmos.Embedding>(pembeddings)),
+					IndexingPolicy = new IndexingPolicy
+					{
+						IncludedPaths = { new IncludedPath { Path = "/*" } },
+						ExcludedPaths = { new ExcludedPath { Path = $"{patchVectorPath}/*" } },
+						VectorIndexes =
+						{
+							new VectorIndexPath
+							{
+								Path = patchVectorPath,
+								Type = indexType == "flat" ? VectorIndexType.Flat :
+									   (indexType == "quantizedflat" || indexType == "quantized_flat") ? VectorIndexType.QuantizedFlat :
+									   VectorIndexType.DiskANN
+							}
+						}
+					}
+				};
+
+				patchnotes = (await db!.CreateContainerIfNotExistsAsync(pprops)).Container;
+			}
+			catch (Exception)
+			{
+				patchnotes = cosmos.GetContainer(dbName ?? "actualgames", patchNotesContainer);
+			}
+		}
+
+		// Establish metrics
+		var meter = new Meter("ActualGameSearch.Worker", "1.0.0");
+		var appsProcessed = meter.CreateCounter<long>("etl.apps_processed");
+		var reviewsIngested = meter.CreateCounter<long>("etl.reviews_ingested");
+		var patchnotesIngested = meter.CreateCounter<long>("etl.patchnotes_ingested");
+		var embeddingFailures = meter.CreateCounter<long>("etl.embedding_failures");
+
+		// Select Steam app IDs (random sample or defaults)
+		int[] appIds;
+		if (samplingEnabled)
+		{
+			try
+			{
+				var listResp = await http.GetFromJsonAsync<SteamAppListResponse>("https://api.steampowered.com/ISteamApps/GetAppList/v2/");
+				var all = listResp?.applist?.apps?.Select(a => a.appid).Where(id => id > 0).Distinct().ToArray() ?? Array.Empty<int>();
+				var rng = Random.Shared;
+				var sample = all.OrderBy(_ => rng.Next()).Take(Math.Clamp(samplingCount, 3, 1000)).ToArray();
+				// Prepend a small set of popular app IDs to ensure we ingest some data even if random sample is sparse
+				int[] preferred = new[] { 620, 570, 440, 730, 292030, 271590, 1172470 };
+				appIds = preferred.Concat(sample).Distinct().ToArray();
+			}
+			catch
+			{
+				appIds = new[] { 620, 570, 440 };
+			}
+		}
+		else
+		{
+			appIds = new[] { 620, 570, 440 }; // small default set
+		}
+	var seededGames = new List<Dictionary<string, object?>>();
 	var seededReviews = new List<Dictionary<string, object?>>();
 
 		foreach (var appId in appIds)
 		{
-			var url = $"https://store.steampowered.com/api/appdetails?appids={appId}&cc=us&l=en";
 			try
 			{
+				// Fetch app details (strict but resilient): skip app if payload is unsuccessful or missing
+				var url = $"https://store.steampowered.com/api/appdetails?appids={appId}&cc=us&l=en";
 				using var resp = await http.GetAsync(url);
-				if (!resp.IsSuccessStatusCode) continue;
-				var payload = await resp.Content.ReadFromJsonAsync<Dictionary<string, AppDetailsResponse>>();
-				if (payload is null || !payload.TryGetValue(appId.ToString(), out var entry) || entry is null || entry.data is null) continue;
+				if (!resp.IsSuccessStatusCode) throw new HttpRequestException($"appdetails HTTP {(int)resp.StatusCode} for app {appId}");
+				var rawDetails = await resp.Content.ReadAsStringAsync();
+				Dictionary<string, AppDetailsResponse>? payload = null;
+				try { payload = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, AppDetailsResponse>>(rawDetails); }
+				catch (Exception jex)
+				{
+					Console.Error.WriteLine($"Failed to parse appdetails for app {appId}. Raw: {Truncate(rawDetails, 600)}\n{jex}");
+					continue; // skip this app, do not fail the whole run
+				}
+				if (payload is null || !payload.TryGetValue(appId.ToString(), out var entry) || entry is null || entry.data is null || entry.IsSuccess == false)
+				{
+					Console.Error.WriteLine($"Skipping app {appId} – appdetails unsuccessful or missing data. Raw: {Truncate(rawDetails, 300)}");
+					continue;
+				}
 				var dapp = entry.data;
 
-				var gameDoc = new
+				var gameId = dapp.steam_appid?.ToString() ?? appId.ToString();
+				var tagsGenres = (dapp.genres ?? Array.Empty<SimpleNamed>()).Select(g => g.name ?? string.Empty);
+				var tagsCats = (dapp.categories ?? Array.Empty<SimpleNamed>()).Select(c => c.name ?? string.Empty);
+				var tagSummary = tagsGenres.Where(s => !string.IsNullOrWhiteSpace(s)).Take(8).ToList();
+				if (tagSummary.Count == 0)
 				{
-					id = dapp.steam_appid?.ToString() ?? appId.ToString(),
-					title = dapp.name ?? $"App {appId}",
-					tagSummary = (dapp.genres ?? Array.Empty<SimpleNamed>()).Select(g => g.name ?? string.Empty).Where(s => !string.IsNullOrWhiteSpace(s)).Take(8).ToArray(),
-					reviewCount = dapp.recommendations?.total ?? 0,
-					price = dapp.price_overview?.final,
-					header = dapp.header_image,
-					when = dapp.release_date?.date
+					// Fallback to categories if genres missing
+					tagSummary = tagsCats.Where(s => !string.IsNullOrWhiteSpace(s)).Take(8).ToList();
+				}
+
+				var type = dapp.type ?? "game";
+				// Keep Steam's reported total for metadata only; do not gate on this (it's often missing for DLC/older titles).
+				var appReviewCount = dapp.recommendations?.total ?? 0;
+
+				var gameDoc = new Dictionary<string, object?>
+				{
+					["id"] = gameId,
+					["title"] = dapp.name ?? $"App {appId}",
+					["tagSummary"] = tagSummary.ToArray(),
+					["reviewCount"] = appReviewCount,
+					["price"] = dapp.price_overview?.final,
+					["header"] = dapp.header_image,
+					["when"] = dapp.release_date?.date,
+					["type"] = type
 				};
+
+				// Precompute game embedding but DEFER game upsert until at least one review is persisted
+				float[]? pendingGameVector = null;
 				if (games is not null)
 				{
-					await games.UpsertItemAsync(gameDoc, new PartitionKey(gameDoc.id));
+					var cleanDetailed = !string.IsNullOrWhiteSpace(dapp.detailed_description) ? EmbeddingUtils.StripHtml(dapp.detailed_description!) : string.Empty;
+					var combinedDesc = string.Join("\n\n", new[] { dapp.short_description, cleanDetailed }.Where(s => !string.IsNullOrWhiteSpace(s))!);
+					if (!string.IsNullOrWhiteSpace(combinedDesc))
+					{
+						pendingGameVector = (await EmbeddingUtils.GenerateVectorsAsync(http, ollamaEndpoint, ollamaModel, new List<string> { combinedDesc }, dims, allowDeterministicFallback, embNumCtx, embMaxBatch)).First();
+					}
 				}
-				seededGames.Add(gameDoc);
 
-
-				// Prefer real user reviews when available; fallback to review-like snippets from the app description
+				// Strict: fetch real reviews; then filter to qualified ones before embedding/persisting
 				var realReviews = await TryFetchSteamReviewsPaginatedAsync(http, appId, maxReviewsPerGame);
-				var texts = realReviews.Count > 0 ? realReviews.Select(r => r.text).ToList() : BuildReviewLikeSnippets(dapp);
-				if (texts.Count == 0) continue;
+				// Require a minimum total number of real reviews overall (independent of quality filter)
+				if (realReviews.Count < Math.Max(minReviewCount, 1))
+				{
+					Console.WriteLine($"Skipping app {appId} ('{dapp.name ?? "unknown"}') – total fetched reviews {realReviews.Count} < minimum overall {minReviewCount}.");
+					continue;
+				}
+				// Apply quality gating
+				var qualified = realReviews
+					.Where(r => (!requireSteamPurchase || r.steamPurchase) && IsTextQualified(r.text, minUniqueWordsPerReview))
+					.ToList();
+				if (qualified.Count < Math.Max(minQualifiedReviews, 1))
+				{
+					Console.WriteLine($"Skipping app {appId} ('{dapp.name ?? "unknown"}') – qualified reviews {qualified.Count} < threshold {minQualifiedReviews} (minUniqueWords={minUniqueWordsPerReview}, requireSteamPurchase={requireSteamPurchase}).");
+					continue;
+				}
 
-				var vectors = await GenerateVectorsAsync(http, ollamaEndpoint, ollamaModel, texts, dims);
+				// Prefer the most helpful and substantial reviews up to maxReviewsPerGame
+				var picked = qualified
+					.OrderByDescending(r => r.votesUp)
+					.ThenByDescending(r => r.votesFunny)
+					.ThenByDescending(r => r.text?.Length ?? 0)
+					.Take(Math.Clamp(maxReviewsPerGame, 1, 1000))
+					.ToList();
 
+				var texts = picked.Select(r => r.text).ToList();
+				List<float[]> vectors;
+				try { vectors = await EmbeddingUtils.GenerateVectorsAsync(http, ollamaEndpoint, ollamaModel, texts, dims, allowDeterministicFallback, embNumCtx, embMaxBatch); }
+				catch { embeddingFailures.Add(1, new KeyValuePair<string, object?>[] { new("stage", "reviews") }); throw; }
+
+				var reviewsWritten = 0;
 				for (int i = 0; i < texts.Count; i++)
 				{
 					var reviewId = Guid.NewGuid().ToString("n");
 					var vec = vectors[i].ToArray();
-					var helpful = realReviews.Count > 0 ? realReviews[i].votesUp : 0;
-					var created = realReviews.Count > 0 ? realReviews[i].createdAt.ToString("O") : DateTimeOffset.UtcNow.ToString("O");
+					var r = picked[i];
+					var created = r.createdAt.ToString("O");
 					var reviewDoc = new Dictionary<string, object?>
 					{
 						["id"] = reviewId,
-						["gameId"] = gameDoc.id,
-						["gameTitle"] = gameDoc.title,
-						["excerpt"] = texts[i],
-						["helpfulVotes"] = helpful,
+						["gameId"] = gameId,
+						["gameTitle"] = gameDoc["title"],
+						["source"] = "steam_review",
+						["lang"] = r.lang,
+						["fullText"] = texts[i],
+						["excerpt"] = texts[i].Length > 240 ? texts[i][..240] : texts[i],
+						["helpfulVotes"] = r.votesUp,
+						["votesFunny"] = r.votesFunny,
+						["recommended"] = r.votedUp,
+						["purchaseType"] = r.steamPurchase ? "steam" : (r.receivedForFree ? "gift" : "other"),
+						["steamReviewId"] = r.id,
 						["createdAt"] = created,
 						["vector"] = vec,
 					};
 					if (reviews is not null)
 					{
 						await reviews.UpsertItemAsync(reviewDoc, new PartitionKey(reviewId));
+						reviewsWritten++;
 					}
 					else
 					{
@@ -203,23 +407,80 @@ internal class Program
 						seededReviews.Add(new Dictionary<string, object?>
 						{
 							["id"] = reviewId,
-							["gameId"] = gameDoc.id,
-							["gameTitle"] = gameDoc.title,
+							["gameId"] = gameId,
+							["gameTitle"] = gameDoc["title"],
 							["excerpt"] = texts[i],
-							["helpfulVotes"] = helpful,
+							["helpfulVotes"] = r.votesUp,
 							["createdAt"] = created,
 							["vectorDims"] = vec.Length
 						});
 					}
+					reviewsIngested.Add(1, new KeyValuePair<string, object?>[] { new("lang", r.lang ?? "unknown") });
+				}
+
+				// Only persist the game and patch notes if we wrote at least the qualified threshold
+				if (reviewsWritten >= minQualifiedReviews && games is not null)
+				{
+					if (pendingGameVector is not null)
+					{
+						gameDoc[gamesVectorPath.TrimStart('/')] = pendingGameVector.ToArray();
+					}
+					// Reflect actual qualified count
+					gameDoc["fetchedReviewCount"] = reviewsWritten;
+					await games.UpsertItemAsync(gameDoc, new PartitionKey(gameId));
+					seededGames.Add(gameDoc);
+					appsProcessed.Add(1);
+				}
+
+				// Patch notes ingestion (optional)
+				if (patchIngestEnabled && patchnotes is not null && reviewsWritten >= minQualifiedReviews)
+				{
+					try
+					{
+						var purl = $"https://api.steampowered.com/ISteamNews/GetNewsForApp/v2/?appid={appId}&count={maxPatchNotesPerGame}&tags=patchnotes";
+						using var presp = await http.GetAsync(purl);
+						if (presp.IsSuccessStatusCode)
+						{
+							var pd = await presp.Content.ReadFromJsonAsync<SteamNewsResponse>();
+							var items = pd?.appnews?.newsitems ?? Array.Empty<SteamNewsItem>();
+							if (items.Length > 0)
+							{
+								var ptexts = items.Select(i => EmbeddingUtils.StripHtml(i.contents ?? string.Empty)).ToList();
+								List<float[]> pvecs;
+								try { pvecs = await EmbeddingUtils.GenerateVectorsAsync(http, ollamaEndpoint, ollamaModel, ptexts, dims, allowDeterministicFallback); }
+								catch { embeddingFailures.Add(1, new KeyValuePair<string, object?>[] { new("stage", "patchnotes") }); throw; }
+								for (int i = 0; i < items.Length && i < maxPatchNotesPerGame; i++)
+								{
+									var it = items[i];
+									var pid = Guid.NewGuid().ToString("n");
+									var published = DateTimeOffset.FromUnixTimeSeconds(it.date).ToString("O");
+									var pdoc = new Dictionary<string, object?>
+									{
+										["id"] = pid,
+										["gameId"] = gameId,
+										["gameTitle"] = gameDoc["title"],
+										["title"] = it.title,
+										["publishedAt"] = published,
+										["excerpt"] = ptexts[i].Length > 240 ? ptexts[i][..240] : ptexts[i],
+										[patchVectorPath.TrimStart('/')] = pvecs[i].ToArray()
+									};
+									await patchnotes.UpsertItemAsync(pdoc, new PartitionKey(pid));
+									patchnotesIngested.Add(1);
+								}
+							}
+						}
+					}
+					catch { /* ignore patch failures per app; non-fatal */ }
 				}
 			}
-			catch
+			catch (Exception ex)
 			{
-				// ignore network hiccups; continue
+				Console.Error.WriteLine($"ETL failed for app {appId}: {ex.Message}\n{ex}");
+				throw;
 			}
 		}
 
-		Console.WriteLine($"Seeded {seededGames.Count} games and corresponding review snippets.");
+		Console.WriteLine($"Seeded {seededGames.Count} games and corresponding reviews.");
 		if (cosmos is null)
 		{
 			// Write artifacts to disk
@@ -235,93 +496,23 @@ internal class Program
 		}
 
 		// Smoke vector search
-	if (seededGames.Count > 0 && reviews is not null)
+		if (seededGames.Count > 0 && reviews is not null)
 		{
 			var probe = "co-op puzzle with portals and witty writing";
-			var vec = (await GenerateVectorsAsync(http, ollamaEndpoint, ollamaModel, new List<string> { probe }, dims)).First();
-
-			async Task<bool> TryRunAsync(CosmosVectorQueryHelper.DistanceFormResolved useForm)
-			{
-				try
-				{
-					var expr = CosmosVectorQueryHelper.VectorDistanceExpr("@e", distance, useForm);
-					var sql = $"SELECT TOP 5 c.id, c.gameTitle, {expr} AS sim FROM c ORDER BY {expr}";
-					var q = new QueryDefinition(sql).WithParameter("@e", vec);
-					using var it = reviews.GetItemQueryIterator<dynamic>(q);
-					Console.WriteLine($"Top 5 semantic matches for probe ({(useForm == CosmosVectorQueryHelper.DistanceFormResolved.ThreeArg ? "3-arg" : "2-arg")})");
-					while (it.HasMoreResults)
-					{
-						var page = await it.ReadNextAsync();
-						foreach (var doc in page)
-						{
-							Console.WriteLine($"  {doc.gameTitle}  sim={doc.sim}");
-						}
-					}
-					return true;
-				}
-				catch (CosmosException ex)
-				{
-					// If the emulator flipped support, try the alternate form once.
-					var msg = ex.Message ?? string.Empty;
-					var twoArgNotSupported = msg.Contains("Not supported function call VECTORDISTANCE with 2 arguments", StringComparison.OrdinalIgnoreCase);
-					var threeArgNotSupported = msg.Contains("Not supported function call VECTORDISTANCE with 3 arguments", StringComparison.OrdinalIgnoreCase);
-					if (twoArgNotSupported || threeArgNotSupported)
-					{
-						var alt = useForm == CosmosVectorQueryHelper.DistanceFormResolved.TwoArg
-							? CosmosVectorQueryHelper.DistanceFormResolved.ThreeArg
-							: CosmosVectorQueryHelper.DistanceFormResolved.TwoArg;
-						Console.WriteLine($"VectorDistance form '{(useForm == CosmosVectorQueryHelper.DistanceFormResolved.ThreeArg ? "3-arg" : "2-arg")}' not supported; retrying with '{(alt == CosmosVectorQueryHelper.DistanceFormResolved.ThreeArg ? "3-arg" : "2-arg")}'.");
-						return await TryRunAsync(alt);
-					}
-					Console.WriteLine($"Vector query failed: {ex.Message}. Ensure the reviews container has a vector policy and index.");
-					return false;
-				}
-			}
-
-			// Resolve preferred form then attempt; the helper caches per-container.
-			var resolved = await CosmosVectorQueryHelper.GetOrResolveFormAsync(reviews, dbName!, reviewsContainer!, distance, vec, formPref);
-			await TryRunAsync(resolved);
+				var vec = (await EmbeddingUtils.GenerateVectorsAsync(http, ollamaEndpoint, ollamaModel, new List<string> { probe }, dims, allowDeterministicFallback, embNumCtx, embMaxBatch)).First();
+			await VectorProbe.TryProbeAsync(reviews, dbName!, reviewsContainer!, distance, vec, formPref, fieldPath: vectorPath);
 		}
 	}
 
-	// Minimal DTOs for Steam response (subset)
-	private record AppDetailsResponse(bool success, SteamAppDetails? data);
-	private record SteamAppDetails(
-		int? steam_appid,
-		string? name,
-		string? short_description,
-		string? detailed_description,
-		PriceOverview? price_overview,
-		ReleaseDate? release_date,
-		SimpleNamed[]? categories,
-		SimpleNamed[]? genres,
-		SteamRecommendations? recommendations,
-		string? header_image
-	);
+	// Intentionally removed any snippet fallback; strict ETL requires real reviews.
 
-	private record SteamRecommendations(int? total);
-	private record PriceOverview(int? final, string? currency);
-	private record ReleaseDate(string? date, bool? coming_soon);
-	private record SimpleNamed(int? id, string? name, string? description);
-
-	private static List<string> BuildReviewLikeSnippets(SteamAppDetails d)
-	{
-		var snippets = new List<string>();
-		if (!string.IsNullOrWhiteSpace(d.short_description)) snippets.Add(d.short_description!);
-		if (!string.IsNullOrWhiteSpace(d.detailed_description))
-		{
-			var cleaned = StripHtml(d.detailed_description!);
-			if (cleaned.Length > 200) cleaned = cleaned[..200];
-			snippets.Add(cleaned);
-		}
-		return snippets.Distinct().Take(2).ToList();
-	}
-
+	// Legacy single-page fetch (unused); keep for reference but map to full shape if used
 	private static async Task<List<SteamUserReview>> TryFetchSteamReviewsAsync(HttpClient http, int appId, int max)
 	{
 		try
 		{
-			var url = $"https://store.steampowered.com/appreviews/{appId}?json=1&filter=recent&language=english&purchase_type=all&num_per_page={max}";
+			// Fetch ALL languages in a single pass (multilingual); do not iterate per-language
+			var url = $"https://store.steampowered.com/appreviews/{appId}?json=1&filter=recent&language=all&purchase_type=all&num_per_page={max}";
 			using var resp = await http.GetAsync(url);
 			if (!resp.IsSuccessStatusCode) return new();
 			var payload = await resp.Content.ReadFromJsonAsync<SteamReviewsResponse>();
@@ -331,7 +522,25 @@ internal class Program
 			{
 				if (string.IsNullOrWhiteSpace(r.review)) continue;
 				var created = DateTimeOffset.FromUnixTimeSeconds(r.timestamp_created);
-				outList.Add(new SteamUserReview(r.recommendationid ?? Guid.NewGuid().ToString("n"), r.review, r.votes_up, created));
+				string? weighted = null;
+				if (r.weighted_vote_score.HasValue)
+				{
+					var el = r.weighted_vote_score.Value;
+					if (el.ValueKind == System.Text.Json.JsonValueKind.String) weighted = el.GetString();
+					else if (el.ValueKind == System.Text.Json.JsonValueKind.Number) weighted = el.GetDouble().ToString("G");
+				}
+				outList.Add(new SteamUserReview(
+					id: r.recommendationid ?? Guid.NewGuid().ToString("n"),
+					text: r.review,
+					votesUp: r.votes_up,
+					votesFunny: r.votes_funny,
+					createdAt: created,
+					lang: r.language,
+					votedUp: r.voted_up,
+					steamPurchase: r.steam_purchase,
+					receivedForFree: r.received_for_free,
+					weightedVoteScore: weighted
+				));
 			}
 			return outList;
 		}
@@ -344,150 +553,138 @@ internal class Program
 	// New: paginate reviews using Steam cursor until reaching max or pages exhausted
 	private static async Task<List<SteamUserReview>> TryFetchSteamReviewsPaginatedAsync(HttpClient http, int appId, int maxTotal)
 	{
-		var results = new List<SteamUserReview>();
-		string cursor = "*"; // initial cursor
-		int pageSize = Math.Clamp(maxTotal >= 100 ? 100 : maxTotal, 10, 100);
-		int pages = 0;
-		while (results.Count < maxTotal && pages < 20)
+		// Steam's 'filter' supports 'recent' or 'updated' (not 'all'). We'll try both if needed.
+		var filtersToTry = new[] { "recent", "updated" };
+		foreach (var filter in filtersToTry)
 		{
-			try
+			var results = new List<SteamUserReview>();
+			string cursor = "*"; // initial cursor
+			int pageSize = Math.Clamp(maxTotal >= 100 ? 100 : maxTotal, 10, 100);
+			int pages = 0;
+			while (results.Count < maxTotal && pages < 20)
 			{
-				var url = $"https://store.steampowered.com/appreviews/{appId}?json=1&filter=recent&language=english&purchase_type=all&num_per_page={pageSize}&cursor={Uri.EscapeDataString(cursor)}";
+				// Multilingual in a single pass; broaden timeframe via day_range.
+					var url =
+					$"https://store.steampowered.com/appreviews/{appId}?json=1" +
+					$"&filter={filter}" +
+					$"&language=all" +
+					$"&review_type=all" +
+					$"&purchase_type=steam" +
+					$"&exclude_inappropriate_content=0" +
+						$"&day_range=0" +
+					$"&num_per_page={pageSize}" +
+					$"&cursor={Uri.EscapeDataString(cursor)}";
 				using var resp = await http.GetAsync(url);
-				if (!resp.IsSuccessStatusCode) break;
-				var payload = await resp.Content.ReadFromJsonAsync<SteamReviewsResponse>();
-				if (payload?.reviews == null || payload.reviews.Length == 0) break;
+				if (!resp.IsSuccessStatusCode)
+				{
+					throw new HttpRequestException($"Steam appreviews returned status {(int)resp.StatusCode} for app {appId} (filter={filter}).");
+				}
+				var raw = await resp.Content.ReadAsStringAsync();
+				SteamReviewsResponse? payload;
+				try
+				{
+					payload = System.Text.Json.JsonSerializer.Deserialize<SteamReviewsResponse>(raw);
+				}
+				catch (Exception jex)
+				{
+					throw new InvalidOperationException($"Failed to parse Steam reviews JSON for app {appId} (filter={filter}). Raw: {Truncate(raw, 800)}", jex);
+				}
+				if (payload is null)
+				{
+					throw new InvalidOperationException($"Steam reviews payload was null for app {appId} (filter={filter}). Raw: {Truncate(raw, 400)}");
+				}
+				if (payload.success != 1)
+				{
+					throw new InvalidOperationException($"Steam reviews 'success' != 1 for app {appId} (filter={filter}). Raw: {Truncate(raw, 400)}");
+				}
+				if (payload.reviews == null || payload.reviews.Length == 0)
+				{
+					Console.Error.WriteLine($"Steam returned 0 reviews (HTTP 200) for app {appId} (filter={filter}, page={pages}, cursor={cursor}). Raw: {Truncate(raw, 400)}");
+					break; // no more for this filter
+				}
+				Console.WriteLine($"Fetched {payload.reviews.Length} reviews for app {appId} (filter={filter}, page={pages+1}).");
 				foreach (var r in payload.reviews)
 				{
 					if (string.IsNullOrWhiteSpace(r.review)) continue;
 					var created = DateTimeOffset.FromUnixTimeSeconds(r.timestamp_created);
-					results.Add(new SteamUserReview(r.recommendationid ?? Guid.NewGuid().ToString("n"), r.review, r.votes_up, created));
+					string? weighted = null;
+					if (r.weighted_vote_score.HasValue)
+					{
+						var el = r.weighted_vote_score.Value;
+						if (el.ValueKind == System.Text.Json.JsonValueKind.String) weighted = el.GetString();
+						else if (el.ValueKind == System.Text.Json.JsonValueKind.Number) weighted = el.GetDouble().ToString("G");
+					}
+					results.Add(new SteamUserReview(
+						id: r.recommendationid ?? Guid.NewGuid().ToString("n"),
+						text: r.review,
+						votesUp: r.votes_up,
+						votesFunny: r.votes_funny,
+						createdAt: created,
+						lang: r.language,
+						votedUp: r.voted_up,
+						steamPurchase: r.steam_purchase,
+						receivedForFree: r.received_for_free,
+						weightedVoteScore: weighted
+					));
 					if (results.Count >= maxTotal) break;
 				}
-				if (results.Count >= maxTotal) break;
+				if (results.Count >= maxTotal) return results; // enough
 				if (string.IsNullOrEmpty(payload.cursor) || payload.cursor == cursor) break;
 				cursor = payload.cursor;
 				pages++;
 			}
-			catch { break; }
+			if (results.Count > 0) return results; // success with this filter
+			// else try next filter
 		}
-		return results;
+		return new();
 	}
 
-	private record SteamReviewsResponse(string? success, SteamReviewItem[] reviews, string? cursor);
-	private record SteamReviewItem(string? recommendationid, string review, int votes_up, int votes_funny, long timestamp_created);
-	private record SteamUserReview(string id, string text, int votesUp, DateTimeOffset createdAt);
-	private static string StripHtml(string html)
+	private static string Truncate(string? s, int max)
 	{
-		var arr = new char[html.Length];
-		int idx = 0; bool inside = false;
-		foreach (var ch in html)
-		{
-			if (ch == '<') { inside = true; continue; }
-			if (ch == '>') { inside = false; continue; }
-			if (!inside) arr[idx++] = ch;
-		}
-		return new string(arr, 0, idx).Replace("\n", " ").Replace("\r", " ").Trim();
+		if (string.IsNullOrEmpty(s)) return string.Empty;
+		if (s!.Length <= max) return s;
+		return s.Substring(0, Math.Max(0, max)) + "…";
 	}
 
-	private static float[] DeterministicVector(string text, int dims)
-	{
-		// Simple non-crypto hash-based embedding to allow offline runs
-		var bytes = Encoding.UTF8.GetBytes(text);
-		var vec = new float[dims];
-		for (int i = 0; i < bytes.Length; i++)
-		{
-			vec[i % dims] += (bytes[i] % 23) / 23.0f;
-		}
-		// L2 normalize
-		var norm = MathF.Sqrt(vec.Sum(v => v * v));
-		if (norm > 0)
-		{
-			for (int i = 0; i < vec.Length; i++) vec[i] /= norm;
-		}
-		return vec;
-	}
+	// Steam DTOs and embedding helpers moved to separate files.
 
-	private static async Task<List<float[]>> GenerateVectorsAsync(HttpClient http, string ollamaEndpoint, string model, List<string> texts, int dims)
-	{
-		// Try multiple compatible Ollama endpoints/shapes
-		async Task<(bool ok, List<float[]> vecs)> TryCallAsync(string path, object payload, Func<System.Text.Json.JsonElement, List<float[]>> projector)
+		// Text quality heuristics
+		private static bool IsTextQualified(string? text, int minUniqueWords)
 		{
-			try
+			if (string.IsNullOrWhiteSpace(text)) return false;
+			var words = Tokenize(text!);
+			if (words.Count == 0) return false;
+			return words.Count >= minUniqueWords;
+		}
+
+		private static HashSet<string> Tokenize(string text)
+		{
+			var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+			var sb = new StringBuilder();
+			void Flush()
 			{
-				var url = new Uri(new Uri(ollamaEndpoint), path);
-				var body = System.Text.Json.JsonSerializer.Serialize(payload);
-				using var req = new HttpRequestMessage(HttpMethod.Post, url)
+				if (sb.Length == 0) return;
+				var w = sb.ToString();
+				if (w.Length >= 2 && w.All(ch => char.IsLetter(ch) || ch == '\'' || ch == '-'))
 				{
-					Content = new StringContent(body, Encoding.UTF8, "application/json")
-				};
-				using var resp = await http.SendAsync(req);
-				if (!resp.IsSuccessStatusCode) return (false, new());
-				using var stream = await resp.Content.ReadAsStreamAsync();
-				using var doc = await System.Text.Json.JsonDocument.ParseAsync(stream);
-				var list = projector(doc.RootElement);
-				if (list.Count == texts.Count) return (true, list);
-				return (false, new());
-			}
-			catch { return (false, new()); }
-		}
-
-		// Projectors for different API shapes
-		static List<float[]> ProjectEmbeddingsData(System.Text.Json.JsonElement root)
-		{
-			var list = new List<float[]>();
-			if (root.TryGetProperty("data", out var data) && data.ValueKind == System.Text.Json.JsonValueKind.Array)
-			{
-				foreach (var item in data.EnumerateArray())
-				{
-					if (item.TryGetProperty("embedding", out var emb) && emb.ValueKind == System.Text.Json.JsonValueKind.Array)
-					{
-						list.Add(emb.EnumerateArray().Select(x => x.GetSingle()).ToArray());
-					}
+					// filter trivial stop-like tokens
+					if (!StopWords.Contains(w)) set.Add(w);
 				}
+				sb.Clear();
 			}
-			return list;
-		}
-
-		static List<float[]> ProjectEmbedArray(System.Text.Json.JsonElement root)
-		{
-			// Some endpoints return { "embeddings": [[...], [...]] }
-			var list = new List<float[]>();
-			if (root.TryGetProperty("embeddings", out var arr) && arr.ValueKind == System.Text.Json.JsonValueKind.Array)
+			foreach (var ch in text)
 			{
-				foreach (var emb in arr.EnumerateArray())
-				{
-					if (emb.ValueKind == System.Text.Json.JsonValueKind.Array)
-						list.Add(emb.EnumerateArray().Select(x => x.GetSingle()).ToArray());
-				}
+				if (char.IsLetter(ch) || ch == '\'' || ch == '-') sb.Append(char.ToLowerInvariant(ch));
+				else Flush();
 			}
-			return list;
+			Flush();
+			return set;
 		}
 
-		// 1) Ollama /api/embeddings with "input"
-		var t1 = await TryCallAsync("api/embeddings", new { model, input = texts }, ProjectEmbeddingsData);
-		if (t1.ok)
+		private static readonly HashSet<string> StopWords = new(new[]
 		{
-			Console.WriteLine($"Ollama embeddings via /api/embeddings input (dims={t1.vecs.FirstOrDefault()?.Length ?? 0})");
-			return t1.vecs;
-		}
-		// 2) Ollama /api/embeddings with "prompt" (per model docs)
-		var t2 = await TryCallAsync("api/embeddings", new { model, prompt = texts }, ProjectEmbeddingsData);
-		if (t2.ok)
-		{
-			Console.WriteLine($"Ollama embeddings via /api/embeddings prompt (dims={t2.vecs.FirstOrDefault()?.Length ?? 0})");
-			return t2.vecs;
-		}
-		// 3) Ollama /api/embed with "input"
-		var t3 = await TryCallAsync("api/embed", new { model, input = texts }, ProjectEmbedArray);
-		if (t3.ok)
-		{
-			Console.WriteLine($"Ollama embeddings via /api/embed (dims={t3.vecs.FirstOrDefault()?.Length ?? 0})");
-			return t3.vecs;
-		}
-
-		// Fallback deterministic embeddings
-		Console.WriteLine("Using deterministic fallback embeddings.");
-		return texts.Select(t => DeterministicVector(t, dims)).ToList();
-	}
+			"a","an","the","and","or","but","if","then","so","of","on","in","to","for","with","at","by","from","up","down","out","over","under",
+			"is","am","are","was","were","be","been","being","it's","its","this","that","these","those","as","it","i","you","he","she","they","we","me","him","her","them","us",
+			"my","your","his","hers","their","our","mine","yours","theirs","ours","do","does","did","done","not","no","yes","y","n","gg","ok","okay","cool","nice","good","bad"
+		}, StringComparer.OrdinalIgnoreCase);
 }
