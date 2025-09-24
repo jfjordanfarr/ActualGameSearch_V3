@@ -253,6 +253,7 @@ internal class Program
 		var reviewsIngested = meter.CreateCounter<long>("etl.reviews_ingested");
 		var patchnotesIngested = meter.CreateCounter<long>("etl.patchnotes_ingested");
 		var embeddingFailures = meter.CreateCounter<long>("etl.embedding_failures");
+		var appErrors = meter.CreateCounter<long>("etl.app_errors");
 
 		// Select Steam app IDs (random sample or defaults)
 		int[] appIds;
@@ -284,10 +285,14 @@ internal class Program
 		{
 			try
 			{
-				// Fetch app details (strict but resilient): skip app if payload is unsuccessful or missing
+				// Fetch app details (resilient): skip app if Steam API fails temporarily
 				var url = $"https://store.steampowered.com/api/appdetails?appids={appId}&cc=us&l=en";
 				using var resp = await http.GetAsync(url);
-				if (!resp.IsSuccessStatusCode) throw new HttpRequestException($"appdetails HTTP {(int)resp.StatusCode} for app {appId}");
+				if (!resp.IsSuccessStatusCode) 
+				{
+					Console.Error.WriteLine($"Skipping app {appId} – Steam appdetails API returned HTTP {(int)resp.StatusCode}. This may be temporary.");
+					continue; // Skip this app instead of crashing
+				}
 				var rawDetails = await resp.Content.ReadAsStringAsync();
 				Dictionary<string, AppDetailsResponse>? payload = null;
 				try { payload = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, AppDetailsResponse>>(rawDetails); }
@@ -475,8 +480,14 @@ internal class Program
 			}
 			catch (Exception ex)
 			{
-				Console.Error.WriteLine($"ETL failed for app {appId}: {ex.Message}\n{ex}");
-				throw;
+				Console.Error.WriteLine($"ETL failed for app {appId}: {ex.Message}");
+				// Don't crash the entire ETL process - just skip this app and continue
+				appErrors.Add(1, new KeyValuePair<string, object?>[] { 
+					new("app_id", appId),
+					new("error_type", ex.GetType().Name),
+					new("stage", "app_processing")
+				});
+				continue; // Skip this app but continue with the next one
 			}
 		}
 

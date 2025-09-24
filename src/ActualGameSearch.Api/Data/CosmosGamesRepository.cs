@@ -59,7 +59,7 @@ public sealed class CosmosGamesRepository : IGamesRepository
         // We use ORDER BY {expr} ASC (smaller is more similar for distances like cosine/2-arg), but our helper returns the expression consistent with ORDER BY
         // To blend, we project both expr and a contains flag; then order by expr primarily, contains secondarily.
 
-        var sql = $"SELECT TOP {top} c.id, c.title, c.reviewCount, {expr} AS similarity, CASE WHEN CONTAINS(c.title, @q) THEN 1 ELSE 0 END AS titleHit FROM c ORDER BY titleHit DESC, similarity";
+        var sql = $"SELECT TOP {top} c.id, c.title, c.reviewCount, {expr} AS similarity, CASE WHEN CONTAINS(c.title, @q) THEN 1 ELSE 0 END AS titleHit FROM c ORDER BY titleHit DESC, similarity ASC";
         var qd = new QueryDefinition(sql)
             .WithParameter("@embedding", queryVector)
             .WithParameter("@q", query);

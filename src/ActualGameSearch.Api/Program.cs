@@ -27,8 +27,16 @@ var hasCosmos = !string.IsNullOrWhiteSpace(builder.Configuration.GetConnectionSt
 	|| Has("Aspire:Microsoft:Azure:Cosmos:AccountEndpoint")
 	|| Has("Aspire:Microsoft:Azure:Cosmos:cosmos-db:ConnectionString")
 	|| Has("Aspire:Microsoft:Azure:Cosmos:cosmos-db:AccountEndpoint");
-// Always force in-memory mode under tests (either env name or test host flag)
-if (isTestEnv || isTestHost) forceInMemory = true;
+
+// Check if we're running against the Cosmos emulator (which doesn't support vector operations)
+var cosmosEndpoint = builder.Configuration.GetConnectionString("cosmos-db") 
+	?? builder.Configuration["Aspire:Microsoft:Azure:Cosmos:cosmos-db:AccountEndpoint"]
+	?? builder.Configuration["Aspire:Microsoft:Azure:Cosmos:AccountEndpoint"];
+var isCosmosEmulator = !string.IsNullOrWhiteSpace(cosmosEndpoint) && 
+	(cosmosEndpoint.Contains("localhost") || cosmosEndpoint.Contains("127.0.0.1"));
+
+// Always force in-memory mode under tests or when using the emulator
+if (isTestEnv || isTestHost || isCosmosEmulator) forceInMemory = true;
 if (forceInMemory) hasCosmos = false;
 
 if (hasCosmos)
