@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Actual Game Search – Beta</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" />
+  <style>
+    body { background: #fafafa; }
+    .result-excerpt { color: #555; white-space: pre-wrap; }
+    .pill { font-size: .75rem; padding: .15rem .45rem; border-radius: .5rem; background: #eef; margin-right: .25rem; }
+    .score { font-variant-numeric: tabular-nums; }
+  </style>
+</head>
+<body class="container py-4">
+  <header class="mb-3">
+    <h1 class="h3">Actual Game Search</h1>
+    <p class="text-muted">Multilingual, hybrid search over games and reviews (demo)</p>
+  </header>
+
+  <form id="search-form" class="row g-2 align-items-center">
+    <div class="col-md-7">
+      <input id="q" class="form-control" placeholder="Describe your dream game…" />
+    </div>
+    <div class="col-auto">
+      <select id="mode" class="form-select">
+        <option value="hybrid" selected>Games (hybrid)</option>
+        <option value="reviews">Reviews (semantic)</option>
+        <option value="grouped">Grouped (by game)</option>
+      </select>
+    </div>
+    <div class="col-auto form-check">
+      <input class="form-check-input" type="checkbox" value="1" id="fulltext" />
+      <label class="form-check-label" for="fulltext">Full text</label>
+    </div>
+    <div class="col-auto">
+      <button class="btn btn-primary" type="submit">Search</button>
+    </div>
+  </form>
+
+  <section class="mt-4">
+    <div id="status" class="small text-muted"></div>
+    <div id="results" class="mt-2"></div>
+  </section>
+
+  <script>
+    const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text!=null) n.textContent = text; return n; };
+    const getJSON = async (url) => { const r = await fetch(url); if (!r.ok) throw new Error(`${r.status}`); return r.json(); };
+
+    const renderGames = (items) => {
+      const wrap = el('div', 'list-group');
+      for (const g of items) {
+        const row = el('a', 'list-group-item list-group-item-action');
+        const title = el('div', 'd-flex w-100 justify-content-between');
+        title.appendChild(el('h5', 'mb-1', g.title ?? g.gameTitle ?? g.gameId));
+        if (g.reviewCount != null) title.appendChild(el('small', 'text-muted', `${g.reviewCount} reviews`));
+        row.appendChild(title);
+        if (Array.isArray(g.tagSummary)) {
+          const tags = el('div', 'mt-1');
+          g.tagSummary.forEach(t => tags.appendChild(el('span', 'pill', t)));
+          row.appendChild(tags);
+        }
+        wrap.appendChild(row);
+      }
+      return wrap;
+    };
+
+    const renderReviews = (items) => {
+      const wrap = el('div', 'list-group');
+      for (const r of items) {
+        const row = el('div', 'list-group-item');
+        row.appendChild(el('div', 'fw-semibold', r.gameTitle ?? r.gameId));
+        if (r.excerpt) row.appendChild(el('div', 'result-excerpt', r.excerpt));
+        const meta = el('div', 'small text-muted mt-1');
+        meta.textContent = `helpful: ${r.reviewMeta?.helpfulVotes ?? 0}`;
+        row.appendChild(meta);
+        wrap.appendChild(row);
+      }
+      return wrap;
+    };
+
+    const renderGrouped = (items) => {
+      const wrap = el('div');
+      for (const g of items) {
+        const card = el('div', 'card mb-3');
+        const body = el('div', 'card-body');
+        body.appendChild(el('h5', 'card-title', g.gameTitle));
+        if (Array.isArray(g.tagSummary)) {
+          const tags = el('div', 'mb-2');
+          g.tagSummary.forEach(t => tags.appendChild(el('span', 'pill', t)));
+          body.appendChild(tags);
+        }
+        const ul = el('ul', 'list-group list-group-flush');
+        (g.candidates ?? []).forEach(c => {
+          const li = el('li', 'list-group-item');
+          if (c.excerpt) li.appendChild(el('div', 'result-excerpt', c.excerpt));
+          ul.appendChild(li);
+        });
+        card.appendChild(body);
+        card.appendChild(ul);
+        wrap.appendChild(card);
+      }
+      return wrap;
+    };
+
+    document.getElementById('search-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const q = document.getElementById('q').value.trim();
+      const mode = document.getElementById('mode').value;
+      if (!q) return;
+      const status = document.getElementById('status');
+      const results = document.getElementById('results');
+      status.textContent = 'Searching…';
+      results.innerHTML = '';
+      try {
+        let json;
+        const full = document.getElementById('fulltext').checked;
+        if (mode === 'hybrid') {
+          json = await getJSON(`/api/search/games?q=${encodeURIComponent(q)}`);
+        } else if (mode === 'reviews') {
+          json = await getJSON(`/api/search/reviews?q=${encodeURIComponent(q)}${full ? '&fields=full' : ''}`);
+        } else {
+          json = await getJSON(`/api/search?q=${encodeURIComponent(q)}${full ? '&fields=full' : ''}`);
+        }
+        const items = json?.data?.items ?? [];
+        status.textContent = `${items.length} results`;
+        results.appendChild(mode === 'hybrid' ? renderGames(items) : (mode === 'reviews' ? renderReviews(items) : renderGrouped(items)));
+      } catch (err) {
+        status.textContent = `Error: ${err.message}`;
+      }
+    });
+  </script>
+</body>
+</html>

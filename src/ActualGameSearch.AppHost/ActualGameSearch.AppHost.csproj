@@ -1,0 +1,23 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Enable .NET Aspire AppHost SDK for source-generated Projects.* and orchestrator wiring -->
+  <Sdk Name="Aspire.AppHost.Sdk" Version="9.4.0" />
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Aspire.Hosting.AppHost" Version="9.4.0" />
+    <PackageReference Include="Aspire.Hosting.Azure.CosmosDB" Version="9.4.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../ActualGameSearch.Api/ActualGameSearch.Api.csproj" />
+    <ProjectReference Include="../ActualGameSearch.Worker/ActualGameSearch.Worker.csproj" />
+  </ItemGroup>
+
+</Project>

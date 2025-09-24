@@ -1,0 +1,17 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "build AppHost",
+      "command": "dotnet",
+      "type": "shell",
+      "args": [
+        "build",
+        "${workspaceFolder}/src/ActualGameSearch.AppHost/ActualGameSearch.AppHost.csproj",
+        "-c",
+        "Debug"
+      ],
+      "problemMatcher": ["$msCompile"]
+    }
+  ]
+}

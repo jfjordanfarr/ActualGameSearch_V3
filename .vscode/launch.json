@@ -1,0 +1,16 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": ".NET Aspire AppHost (HTTPS)",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build AppHost",
+      "program": "${workspaceFolder}/src/ActualGameSearch.AppHost/bin/Debug/net8.0/ActualGameSearch.AppHost.dll",
+      "args": ["--launch-profile", "https"],
+      "cwd": "${workspaceFolder}/src/ActualGameSearch.AppHost",
+      "console": "integratedTerminal",
+      "stopAtEntry": false
+    }
+  ]
+}

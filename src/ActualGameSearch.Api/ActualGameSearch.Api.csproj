@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../ActualGameSearch.ServiceDefaults/ActualGameSearch.ServiceDefaults.csproj" />
+    <ProjectReference Include="../ActualGameSearch.Core/ActualGameSearch.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Aspire.Microsoft.Azure.Cosmos" Version="9.4.0" />
+  <PackageReference Include="Microsoft.Azure.Cosmos" Version="3.52.0" />
+  </ItemGroup>
+
+</Project>

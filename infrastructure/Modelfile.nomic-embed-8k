@@ -1,0 +1,4 @@
+# Custom Modelfile for nomic-embed-text with 8k context
+# This overrides the default 2048 context limit to enable the full 8192 token context window
+FROM nomic-embed-text:latest
+PARAMETER num_ctx 8192

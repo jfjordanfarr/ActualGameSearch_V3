@@ -45,19 +45,26 @@
 
 ---
 
+## Clarifications
+
+### Session 2025-09-24
+- Q: What specific rate limiting threshold should the system enforce? → A: 60 requests per minute per IP
+- Q: What specific standard should error messages follow? → A: User-friendly codes: "Search timeout (E001). Try shorter terms."
+- Q: What approach should "similar games" similarity use? → A: Remove "similar games" and defer as enhancement
+- Q: What specific accessibility and responsiveness standards should be met? → A: Basic: Mobile-responsive + WCAG 2.1 AA compliance
+- Q: Which standard terminology should be used throughout? → A: Context-sensitive: "title" for domain objects, "result" for API responses
+
 ## User Scenarios & Testing (mandatory)
 
 ### Primary User Story
-A visitor describes their “dream game” in a natural-language prompt and receives a
-ranked list of relevant games with short explanations and quick ways to explore
-similar games.
+A visitor describes their "dream game" in a natural-language prompt and receives a
+ranked list of relevant games with short explanations and configurable re-ranking controls.
 
 ### Acceptance Scenarios
 1. Given a visitor enters a prompt describing desired mechanics and themes, When they submit the query, Then the system returns a candidate pool (up to a configured cap) grouped by game with signals needed for local re-ranking and convergence filtering; the client presents an initial subset suitable for browsing.
-2. Given a result game is shown, When the visitor requests similar games, Then the system shows a related set based on semantic neighbors with brief explanations.
-3. Given a visitor adjusts relevance sliders (e.g., semantic vs textual weight, positivity, richness, playtime), When they re-rank locally, Then the ordering of results updates without a new server search.
-4. Given a visitor toggles a convergence filter (e.g., require ≥2 matching reviews per game, or require ≥1 matching review and a game-description match), When they apply it, Then only games satisfying the convergence condition remain.
-5. Given convergence filtering is off, When the visitor views results, Then they can optionally include “singletons” (games with exactly one matching review) as discoverable “dark matter.”
+2. Given a visitor adjusts relevance sliders (e.g., semantic vs textual weight, positivity, richness, playtime), When they re-rank locally, Then the ordering of results updates without a new server search.
+3. Given a visitor toggles a convergence filter (e.g., require ≥2 matching reviews per game, or require ≥1 matching review and a game-description match), When they apply it, Then only games satisfying the convergence condition remain.
+4. Given convergence filtering is off, When the visitor views results, Then they can optionally include "singletons" (games with exactly one matching review) as discoverable "dark matter."
 
 ### Edge Cases
 - Empty or extremely short queries are politely rejected with guidance to refine the prompt.
@@ -70,16 +77,14 @@ similar games.
 ### Functional Requirements
 - FR-001: The system MUST accept a free-text search prompt and return a candidate set suitable for client-side re-ranking.
 - FR-002: The client MUST present an initial subset of candidates with title, image (if available), short description, and 1–3 short evidence snippets that justify the match; the subset size MUST be configurable.
-- FR-003: The system MUST support a “similar games” action from any result, returning a related set with brief explanations.
 - FR-004: The client MUST support dynamic local re-ranking via user-adjustable weights (e.g., semantic vs textual match, positivity, richness, playtime), without requiring a new server query.
-- FR-005: The system MUST provide actionable, non-technical error messages (no stack traces).
+- FR-005: The system MUST provide actionable, non-technical error messages using user-friendly error codes (format: "Problem description (EXXX). Suggested action.") with no stack traces exposed to users.
 - FR-006: The system MUST handle up to 200 reviews per game as part of relevance evidence and similarity calculations.
-- FR-007: The system MUST enforce basic rate limiting to protect from abuse.
+- FR-007: The system MUST enforce rate limiting of 60 requests per minute per IP address to protect from abuse while allowing frontend multiple concurrent requests during user sessions.
 - FR-008: The system MUST log query metadata and errors without PII for monitoring quality and performance.
 - FR-009: The system SHOULD allow exploration of related games via multiple pivots (e.g., tags, mechanics, themes).
 - FR-010: The system MAY support visual exploration of embeddings (2D/3D) as an optional enhancement.
-- FR-011: The experience MUST be responsive and accessible.
-- FR-012: The system MUST provide “similar games” from a game detail view as well as from the search results.
+- FR-011: The experience MUST be mobile-responsive and comply with WCAG 2.1 AA accessibility standards.
 - FR-013: The system MUST provide deterministic, auditable handling for duplicate or near-duplicate reviews, and noisy metadata fields.
 
 ### Filtering & Constraints
@@ -138,3 +143,11 @@ similar games.
 - [x] Requirements generated
 - [x] Entities identified
 - [ ] Review checklist passed
+
+---
+
+## Reality Check (as of 2025-09-23)
+- Endpoints implemented: `/api/search/games`, `/api/search/reviews`, `/api/search`.
+- Implemented query params: `q` (all), `top` (cap), `fields=full` (reviews/grouped only). Planned params like `candidateCap`, `controller`, `adultOnly`, and explicit convergence filters are not yet wired in the API.
+- Result envelope: `{ ok, data, error }` matches contract tests and current implementation.
+- Aspire AppHost provisions Cosmos emulator and Ollama container; API falls back to in-memory repos in test mode.

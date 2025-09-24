@@ -1,0 +1,346 @@
+openapi: 3.0.3
+info:
+  title: Actual Game Search API
+  version: 0.1.0
+  description: Hybrid full-text + semantic search returning grouped-by-game candidates for client re-ranking.
+servers:
+  - url: http://localhost:8080
+paths:
+  /api/search/games:
+    get:
+      summary: Search games only (cheap preview)
+      description: Returns lightweight game summaries for initial preview.
+      parameters:
+        - in: query
+          name: q
+          schema:
+            type: string
+          required: true
+          description: Search query text
+        - in: query
+          name: top
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 10
+          description: Maximum number of items to return (current implementation cap is 50)
+        # Planned, not currently enforced in implementation
+        - in: query
+          name: candidateCap
+          deprecated: true
+          schema:
+            type: integer
+            minimum: 50
+            maximum: 2000
+            default: 200
+          description: Planned alias for result cap; not currently used by the API
+        - in: query
+          name: adultOnly
+          deprecated: true
+          schema:
+            type: boolean
+        - in: query
+          name: controller
+          deprecated: true
+          schema:
+            type: string
+            enum: [none, partial, full]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Result'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          items:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/GameSummary'
+        '400':
+          description: Invalid parameters
+  /api/search/reviews:
+    get:
+      summary: Search reviews only
+      description: Returns review candidates suitable for client-side re-ranking.
+      parameters:
+        - in: query
+          name: q
+          schema:
+            type: string
+          required: true
+          description: Search query text
+        - in: query
+          name: top
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 10
+          description: Maximum number of items to return (current implementation cap is 50)
+        - in: query
+          name: fields
+          schema:
+            type: string
+            enum: [full]
+          description: Optional flag to include full review text when set to 'full'
+        # Planned parameters for convergence (currently ignored by API)
+        - in: query
+          name: convergence.minReviewMatches
+          deprecated: true
+          schema:
+            type: integer
+            minimum: 0
+        - in: query
+          name: convergence.requireGameAndReview
+          deprecated: true
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Result'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          items:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/Candidate'
+        '400':
+          description: Invalid parameters
+  /api/search:
+    get:
+      summary: Search games and reviews
+      description: Returns grouped candidates by game for client-side re-ranking.
+      parameters:
+        - in: query
+          name: q
+          schema:
+            type: string
+          required: true
+          description: Search query text
+        - in: query
+          name: top
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 25
+            default: 10
+          description: Maximum number of grouped games to return (current implementation cap is 25)
+        - in: query
+          name: fields
+          schema:
+            type: string
+            enum: [full]
+          description: Optional flag to include full review text within grouped results when set to 'full'
+        # Planned parameters (currently unused by API)
+        - in: query
+          name: minReviews
+          deprecated: true
+          schema:
+            type: integer
+            minimum: 0
+        - in: query
+          name: adultOnly
+          deprecated: true
+          schema:
+            type: boolean
+        - in: query
+          name: controller
+          deprecated: true
+          schema:
+            type: string
+            enum: [none, partial, full]
+        - in: query
+          name: includeDLC
+          deprecated: true
+          schema:
+            type: boolean
+            default: true
+        - in: query
+          name: candidateCap
+          deprecated: true
+          schema:
+            type: integer
+            minimum: 50
+            maximum: 2000
+            default: 500
+        - in: query
+          name: convergence.minReviewMatches
+          deprecated: true
+          schema:
+            type: integer
+            minimum: 0
+        - in: query
+          name: convergence.requireGameAndReview
+          deprecated: true
+          schema:
+            type: boolean
+        - in: query
+          name: weights.semantic
+          deprecated: true
+          schema:
+            type: number
+            minimum: 0
+            maximum: 1
+            default: 0.5
+        - in: query
+          name: weights.text
+          deprecated: true
+          schema:
+            type: number
+            minimum: 0
+            maximum: 1
+            default: 0.5
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Result'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          queryId:
+                            type: string
+                          items:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/GameCandidates'
+        '400':
+          description: Invalid parameters
+  /api/similar/{gameId}:
+    get:
+      summary: Find similar games
+      description: Planned endpoint; not yet implemented in the current API build.
+      parameters:
+        - in: path
+          name: gameId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/GameCandidates'
+        '404':
+          description: Not found
+components:
+  schemas:
+    Result:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        data:
+          nullable: true
+        error:
+          nullable: true
+          $ref: '#/components/schemas/Error'
+    Error:
+      type: object
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        details:
+          nullable: true
+    GameSummary:
+      type: object
+      properties:
+        gameId:
+          type: string
+        gameTitle:
+          type: string
+        tagSummary:
+          type: array
+          items:
+            type: string
+        reviewCount:
+          type: integer
+    Candidate:
+      type: object
+      properties:
+        gameId:
+          type: string
+        gameTitle:
+          type: string
+        reviewId:
+          type: string
+          nullable: true
+        textScore:
+          type: number
+        semanticScore:
+          type: number
+        combinedScore:
+          type: number
+        excerpt:
+          type: string
+          nullable: true
+        fullText:
+          type: string
+          nullable: true
+          description: Included when `fields=full` is requested; otherwise may be null or omitted
+        reviewMeta:
+          type: object
+          nullable: true
+          properties:
+            helpfulVotes:
+              type: integer
+            createdAt:
+              type: string
+              format: date-time
+    GameCandidates:
+      type: object
+      properties:
+        gameId:
+          type: string
+        gameTitle:
+          type: string
+        tagSummary:
+          type: array
+          items:
+            type: string
+        reviewCount:
+          type: integer
+        purchaseOriginRatio:
+          type: object
+          properties:
+            steam:
+              type: number
+            other:
+              type: number
+            unknown:
+              type: number
+            totalSampled:
+              type: integer
+        candidates:
+          type: array
+          items:
+            $ref: '#/components/schemas/Candidate'
