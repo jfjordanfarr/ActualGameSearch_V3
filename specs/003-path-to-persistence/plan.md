@@ -30,9 +30,10 @@ IMPORTANT: The /plan command STOPS at step 7. Phases 2-4 are executed by other c
 - Phase 3-4: Implementation execution (manual or via tools)
 
 ## Summary
-Goal: Capture Steam data once (Bronze), refine into clean, queryable datasets (Silver), and derive a reproducible candidate set (Gold) for indexing—minimizing external calls, preserving provenance, and enabling empirical thresholding.
+Goal: Capture Steam data once (Bronze), refine into clean, queryable datasets (Silver), and derive a reproducible candidate set (Gold) for indexing—minimizing external calls, preserving provenance, and enabling empirical thresholding. Incorporate concrete signals: PatchNotesRatio from ISteamNews (tags=patchnotes), developer responsiveness and review update velocity from appreviews, and optional UGC velocity/maintenance from Workshop.
 
 Approach: Implement a local-first medallion data lake under `AI-Agent-Workspace/Artifacts/DataLake` using gzip JSON for Bronze and Parquet (Snappy) + manifest for Silver/Gold. A .NET Worker orchestrates ingestion with strict concurrency (max 4), exponential backoff, resumable checkpoints, and configurable cadences (weekly store/news; delta reviews). Reviews are stored with full text in Bronze but capped per app (default 10). Silver annotates content types (games/DLC/demos/workshop), normalizes fields, and deduplicates; Gold emits a candidate list with metrics and citations to raw evidence.
+Additionally, Silver introduces `NewsItemRefined` with sanitized `bodyClean` and `isPatchNotes`, and `RefinedGame` accumulates derived metrics (patchNotesRatio, devResponseRate, avgDevResponseTimeHours, reviewUpdateVelocity, ugcMetrics?).
 
 ## Technical Context
 **Language/Version**: C# 12 (.NET 8.0)

@@ -18,6 +18,8 @@ This feature primarily adds a background worker, not new HTTP endpoints. The con
 - --recrawl-news=7d
 - --reviews-cap-per-app=10
 - --mode=[full|popular|mid|longtail]
+ - --news-tags=patchnotes|all (default: all; when 'patchnotes', also compute PatchNotesRatio)
+ - --reviews-language=all --reviews-type=all --reviews-purchase=steam --reviews-per-page=100
 
 ## Outputs
 - Exit code 0 on success; nonzero on failure.
@@ -37,3 +39,12 @@ This feature primarily adds a background worker, not new HTTP endpoints. The con
 - gold/
   - candidates/partition={yyyyMMdd}/{file}.parquet
   - manifests/{runId}.manifest.json
+
+## External Endpoints & Behaviors
+- News: `ISteamNews/GetNewsForApp/v2` with optional `tags=patchnotes`; consider pinning version in requests.
+- Reviews: `https://store.steampowered.com/appreviews/{appid}?json=1` with cursor pagination. Start with `cursor=*` and follow URL-encoded cursors until completion. Respect per-app review cap at Bronze.
+- Workshop (optional Silver+): `IPublishedFileService/QueryFiles/v1` for UGC metrics.
+
+## Sanitization & Metrics
+- News contents sanitized from HTML/BBCode into `bodyClean` (Silver); raw preserved in Bronze.
+- Derived metrics: patchNotesRatio, devResponseRate, avgDevResponseTimeHours, reviewUpdateVelocity; optional ugcMetrics.

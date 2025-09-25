@@ -50,6 +50,14 @@ Date: 2025-09-25
 - timestamp: datetime
 - bodyRaw: string
 - sourceUrl: string
+  
+### NewsItemRefined (Silver)
+- appId: int
+- newsId: string
+- title: string
+- timestamp: date (UTC)
+- bodyClean: string (sanitized from HTML/BBCode)
+- isPatchNotes: bool (via tags=patchnotes or classifier)
 
 ### RefinedGame (Silver)
 - appId: int
@@ -63,6 +71,11 @@ Date: 2025-09-25
 - reviewCounts: { total, recentWindow }
 - reviewStats: { upRatio, helpfulRate }
 - dupGroupId: string|null (potential duplicates grouping)
+ - patchNotesRatio: float (0..1)
+ - devResponseRate: float (0..1)
+ - avgDevResponseTimeHours: float
+ - reviewUpdateVelocity: float (updates/day in window)
+ - ugcMetrics?: { velocityPerMonth: float, maintenanceRate6m: float, uniqueAuthors: int }
 
 ### Candidate (Gold)
 - appId: int
