@@ -4,3 +4,8 @@
 # But keep these files under version control
 !.gitignore
 !README.md
+
+# Allow README in DataLake subfolder (keep other files ignored)
+!DataLake/
+DataLake/*
+!DataLake/README.md

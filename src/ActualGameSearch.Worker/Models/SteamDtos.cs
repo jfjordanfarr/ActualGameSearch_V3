@@ -64,4 +64,4 @@ public record SteamAppIdName(int appid, string name);
 
 public record SteamNewsResponse(SteamNewsApp appnews);
 public record SteamNewsApp(int appid, SteamNewsItem[] newsitems);
-public record SteamNewsItem(string gid, string title, string url, string author, int contents_length, long date, string feedlabel, string feedname, string feed_type, int appid, string? contents);
+public record SteamNewsItem(string gid, string title, string url, string author, int contents_length, long date, string feedlabel, string feedname, int feed_type, int appid, string? contents);

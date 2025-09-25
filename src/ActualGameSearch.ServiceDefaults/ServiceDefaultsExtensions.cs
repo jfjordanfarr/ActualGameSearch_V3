@@ -8,6 +8,8 @@ using OpenTelemetry.Logs;
 using Microsoft.Extensions.Logging;
 using OpenTelemetry.Exporter;
 using System.Diagnostics;
+using System.Net;
+using Microsoft.Extensions.Http.Resilience;
 
 namespace ActualGameSearch.ServiceDefaults;
 
@@ -74,6 +76,42 @@ public static class ServiceDefaultsExtensions
                         exp.Protocol = OtlpExportProtocol.HttpProtobuf;
                     }
                 }));
+
+        // Global HttpClient with standard resilience (applies to all clients by default)
+        builder.Services.AddHttpClient();
+        builder.Services.ConfigureHttpClientDefaults(http =>
+        {
+            http.AddStandardResilienceHandler(options =>
+            {
+                options.Retry.MaxRetryAttempts = 5;
+                options.TotalRequestTimeout.Timeout = TimeSpan.FromSeconds(30);
+                options.AttemptTimeout.Timeout = TimeSpan.FromSeconds(10);
+                // Default transient predicates include 5xx/408/timeout and honor Retry-After on 429/503.
+            });
+        });
+
+        // Named client for Steam with etiquette + resilience
+        builder.Services
+            .AddHttpClient("steam", client =>
+            {
+                client.DefaultRequestHeaders.UserAgent.ParseAdd("ActualGameSearch/1.0 (+https://actualgamesearch.com)");
+                client.DefaultRequestHeaders.Accept.ParseAdd("application/json");
+            })
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            {
+                AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
+                MaxConnectionsPerServer = 4,
+                PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2),
+            })
+            .AddStandardResilienceHandler(options =>
+            {
+                options.Retry.MaxRetryAttempts = 5;
+                options.TotalRequestTimeout.Timeout = TimeSpan.FromSeconds(30);
+                options.AttemptTimeout.Timeout = TimeSpan.FromSeconds(10);
+                options.CircuitBreaker.SamplingDuration = TimeSpan.FromMinutes(2);
+                options.CircuitBreaker.MinimumThroughput = 20;
+                options.CircuitBreaker.FailureRatio = 0.2;
+            });
 
         return builder;
     }

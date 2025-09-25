@@ -56,6 +56,7 @@ As the project maintainer, I want to capture Steam game data once and retain the
 3. Given refinement outputs and a threshold policy, when I derive the candidate set, then the system outputs a reproducible list of “legitimate titles” with an accompanying rationale (metrics snapshot) and an audit trail linking back to raw sources.
 4. Given partial prior runs or interruptions, when I re-run ingestion/refinement, then the operation is resumable and does not duplicate work or exceed rate limits beyond defined allowances.
 5. Given repeated execution on a short interval, when ingestion is invoked again, then the system detects already-seen inputs and avoids unnecessary external requests while still capturing allowed deltas.
+6. Given a title is selected as a Gold candidate and only Bronze-capped reviews (e.g., 10) exist locally, when I run the derive flow with tiered capture enabled, then the system performs a targeted delta to extend reviews for that app up to the configured Gold cap (e.g., 200) without duplicating prior pages and then computes metrics/embeddings for derivation.
 
 ### Edge Cases
 - External API instability (rate limits, schema drift, partial pages). The system must fail gracefully, record context, and allow resume.
@@ -90,6 +91,7 @@ As the project maintainer, I want to capture Steam game data once and retain the
  - FR-020: Ingestion MUST enforce a hard cap of 4 concurrent outbound requests with exponential backoff, random-without-replacement iteration over appids, and resumable checkpoints.
  - FR-021: Default recrawl cadences MUST be weekly for store pages and news/patch notes and delta-based for reviews (by page/cursor); cadences must be configurable.
  - FR-022: The local data lake root MUST be `AI-Agent-Workspace/Artifacts/DataLake`; Bronze stored as gzip-compressed JSON; Silver/Gold stored as Parquet with Snappy compression and an accompanying manifest; an Iceberg-compatible path is a future objective but not a hard requirement.
+ - FR-023: The system MUST support tiered review capture: Bronze uses a small per-app cap by default for breadth, and Gold derivation MUST be able to trigger targeted review deltas to extend specific appids up to a higher cap before computing metrics/embeddings, without re-fetching already captured pages.
 
 ### Key Entities (data-oriented)
 - Run: A single execution instance (ingestion or refinement) capturing timing, parameters, and outcomes.

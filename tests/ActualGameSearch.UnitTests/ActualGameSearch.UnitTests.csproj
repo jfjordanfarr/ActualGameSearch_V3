@@ -22,6 +22,7 @@
 
   <ItemGroup>
     <ProjectReference Include="../../src/ActualGameSearch.Core/ActualGameSearch.Core.csproj" />
+    <ProjectReference Include="../../src/ActualGameSearch.Worker/ActualGameSearch.Worker.csproj" />
   </ItemGroup>
 
 </Project>

@@ -13,6 +13,9 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using ActualGameSearch.Core.Services;
+using ActualGameSearch.Worker.Services;
+using ActualGameSearch.Worker.Ingestion;
+using ActualGameSearch.Worker.Storage;
 
 namespace ActualGameSearch.Worker;
 
@@ -22,6 +25,9 @@ internal class Program
 	{
 	var builder = Host.CreateApplicationBuilder(args);
 	builder.AddServiceDefaults();
+
+	// Register Steam client for DI
+	builder.Services.AddSingleton<ISteamClient, SteamHttpClient>();
 
 		// Config defaults (can be overridden via appsettings or env)
 		var ollamaEndpoint = builder.Configuration["Ollama:Endpoint"] ?? "http://localhost:11434/";
@@ -63,7 +69,8 @@ internal class Program
 
 		using var host = builder.Build();
 
-		var http = host.Services.GetRequiredService<IHttpClientFactory>().CreateClient();
+	var http = host.Services.GetRequiredService<IHttpClientFactory>().CreateClient();
+	var steamHttp = host.Services.GetRequiredService<IHttpClientFactory>().CreateClient("steam");
 		http.Timeout = TimeSpan.FromSeconds(Math.Clamp(embHttpTimeoutSeconds, 30, 600));
 		// Set a friendly User-Agent and Accept to avoid being blocked or served atypical responses
 		try
@@ -247,6 +254,48 @@ internal class Program
 			}
 		}
 
+		// Minimal bronze sample ingestion path (quick demo) before metrics setup
+		if (args.Length >= 2 && args[0] == "ingest" && args[1] == "bronze-reviews-sample")
+		{
+			var steam = host.Services.GetRequiredService<ISteamClient>();
+			var dataRoot = builder.Configuration["DataLake:Root"] ?? "AI-Agent-Workspace/Artifacts/DataLake";
+			var cap = int.TryParse(builder.Configuration["Ingestion:ReviewCapBronze"], out var rc) ? rc : 10;
+			var runId = $"run-{DateTime.UtcNow:yyyyMMdd-HHmmss}";
+			var today = DateTime.UtcNow.Date;
+			var mw = new ManifestWriter(dataRoot, runId, "bronze", new Dictionary<string, string>
+			{
+				["reviewCapBronze"] = cap.ToString(),
+				["mode"] = "sample"
+			});
+			mw.Start();
+			var ingestor = new BronzeReviewIngestor(steam, dataRoot, cap);
+			var storeIngestor = new BronzeStoreIngestor(steam, dataRoot);
+			var newsIngestor = new BronzeNewsIngestor(steam, dataRoot);
+			int[] sampleApps = new[] { 620, 570, 440 };
+			foreach (var appId in sampleApps)
+			{
+				try
+				{
+					var written = await ingestor.IngestReviewsAsync(appId, runId, today);
+					mw.RecordItem($"reviews:{appId}", written);
+
+					var storeWritten = await storeIngestor.IngestStoreAsync(appId, runId, today);
+					mw.RecordItem($"store:{appId}", storeWritten);
+
+					var newsWritten = await newsIngestor.IngestNewsAsync(appId, runId, today, count: 10, tags: "patchnotes");
+					mw.RecordItem($"news:{appId}", newsWritten);
+				}
+				catch (Exception ex)
+				{
+					mw.RecordError(ex);
+				}
+			}
+			mw.Finish();
+			await mw.SaveAsync();
+			Console.WriteLine($"Bronze sample complete. Manifest: {DataLakePaths.Bronze.Manifest(dataRoot, runId)}");
+			return;
+		}
+
 		// Establish metrics
 		var meter = new Meter("ActualGameSearch.Worker", "1.0.0");
 		var appsProcessed = meter.CreateCounter<long>("etl.apps_processed");
@@ -261,7 +310,7 @@ internal class Program
 		{
 			try
 			{
-				var listResp = await http.GetFromJsonAsync<SteamAppListResponse>("https://api.steampowered.com/ISteamApps/GetAppList/v2/");
+				var listResp = await steamHttp.GetFromJsonAsync<SteamAppListResponse>("https://api.steampowered.com/ISteamApps/GetAppList/v2/");
 				var all = listResp?.applist?.apps?.Select(a => a.appid).Where(id => id > 0).Distinct().ToArray() ?? Array.Empty<int>();
 				var rng = Random.Shared;
 				var sample = all.OrderBy(_ => rng.Next()).Take(Math.Clamp(samplingCount, 3, 1000)).ToArray();
@@ -287,7 +336,7 @@ internal class Program
 			{
 				// Fetch app details (resilient): skip app if Steam API fails temporarily
 				var url = $"https://store.steampowered.com/api/appdetails?appids={appId}&cc=us&l=en";
-				using var resp = await http.GetAsync(url);
+				using var resp = await steamHttp.GetAsync(url);
 				if (!resp.IsSuccessStatusCode) 
 				{
 					Console.Error.WriteLine($"Skipping app {appId} – Steam appdetails API returned HTTP {(int)resp.StatusCode}. This may be temporary.");
@@ -347,7 +396,7 @@ internal class Program
 				}
 
 				// Strict: fetch real reviews; then filter to qualified ones before embedding/persisting
-				var realReviews = await TryFetchSteamReviewsPaginatedAsync(http, appId, maxReviewsPerGame);
+				var realReviews = await TryFetchSteamReviewsPaginatedAsync(steamHttp, appId, maxReviewsPerGame);
 				// Require a minimum total number of real reviews overall (independent of quality filter)
 				if (realReviews.Count < Math.Max(minReviewCount, 1))
 				{
@@ -443,7 +492,7 @@ internal class Program
 					try
 					{
 						var purl = $"https://api.steampowered.com/ISteamNews/GetNewsForApp/v2/?appid={appId}&count={maxPatchNotesPerGame}&tags=patchnotes";
-						using var presp = await http.GetAsync(purl);
+						using var presp = await steamHttp.GetAsync(purl);
 						if (presp.IsSuccessStatusCode)
 						{
 							var pd = await presp.Content.ReadFromJsonAsync<SteamNewsResponse>();
