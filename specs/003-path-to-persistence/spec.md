@@ -1,0 +1,115 @@
+# Feature Specification: 003 – Path to Persistence
+
+**Feature Branch**: `003-path-to-persistence`  
+**Created**: 2025-09-25  
+**Status**: Draft  
+**Input**: User description: "Build a persistence-first, storewide ingestion and refinement effort for Steam app data so we only fetch once, keep raw evidence, and empirically decide cutoffs (legitimate titles) before production indexing."
+
+## Execution Flow (main)
+```
+1. Parse user description from Input
+   → Done
+2. Extract key concepts from description
+   → Actors: project maintainer, background ingestion/refinement jobs, reviewers of datasets
+   → Actions: capture once, persist raw, refine iteratively, derive candidate set, measure thresholds empirically
+   → Data: Steam catalog, store pages, reviews, patch notes; run metadata; threshold policies; candidate list
+   → Constraints: minimize external API calls, reproducibility, local-first, path to durable cloud storage
+3. For each unclear aspect
+   → Mark with [NEEDS CLARIFICATION]
+4. Fill User Scenarios & Testing
+   → Added below
+5. Generate Functional Requirements
+   → Added below (testable, business-focused)
+6. Identify Key Entities
+   → Added below
+7. Review Checklist
+   → Present below
+8. Return: SUCCESS (spec ready for planning)
+```
+
+---
+
+## ⚡ Quick Guidelines
+- Focus on WHAT the system must achieve for maintainers/users and WHY (reduce cost, increase durability, enable empirical selection of legitimate titles)
+- Avoid implementation-specific details (no specific databases, libraries, or code structures mandated)
+- Write for stakeholders who care about durability, cost, auditability, and decision quality
+
+---
+
+## User Scenarios & Testing (mandatory)
+
+### Primary User Story
+As the project maintainer, I want to capture Steam game data once and retain the raw evidence so that I can refine, audit, and empirically determine legitimacy thresholds without repeatedly calling external APIs or losing provenance.
+
+### Acceptance Scenarios
+1. Given no prior data, when I execute the storewide ingestion, then the system persists timestamped raw responses (catalog, store pages, reviews, patch notes) with run metadata, and a summary report is produced.
+2. Given raw data exists, when I run refinement, then the system produces curated, queryable datasets with standardized fields, de-duplication, and basic quality indicators, along with a summary of record counts and any discarded records with reasons.
+3. Given refinement outputs and a threshold policy, when I derive the candidate set, then the system outputs a reproducible list of “legitimate titles” with an accompanying rationale (metrics snapshot) and an audit trail linking back to raw sources.
+4. Given partial prior runs or interruptions, when I re-run ingestion/refinement, then the operation is resumable and does not duplicate work or exceed rate limits beyond defined allowances.
+5. Given repeated execution on a short interval, when ingestion is invoked again, then the system detects already-seen inputs and avoids unnecessary external requests while still capturing allowed deltas.
+
+### Edge Cases
+- External API instability (rate limits, schema drift, partial pages). The system must fail gracefully, record context, and allow resume.
+- Extremely large or sparse applications (very high/low review volumes). The system must not time out unbounded; it should use bounded pages/runs.
+- Content type differences (games vs DLC/demos/non-games). The system must provide filters and reasons for exclusion.
+- Clock/timezone inconsistencies across sources. The system must normalize timestamps at refinement time.
+- Data retention vs cost constraints. The system must make retention configurable while preserving auditability of decisions.
+
+## Requirements (mandatory)
+
+### Functional Requirements
+- FR-001: The system MUST support a one-time storewide catalog pass to enumerate app identifiers and core descriptors used for downstream targeting.
+- FR-002: The system MUST persist raw external responses immutably with timestamped partitions and run metadata to enable full reproducibility and audit trails.
+- FR-003: The system MUST provide a resumable, idempotent ingestion behavior that avoids redundant external requests for already-captured items within configurable windows.
+- FR-004: The system MUST produce a human-readable summary after each run (counts, durations, error classes, skipped items, newly added items).
+- FR-005: The system MUST offer a refinement stage that standardizes fields (e.g., dates, categories, languages), de-duplicates records, and flags inconsistencies without discarding source evidence.
+- FR-006: The system MUST expose data selection thresholds as configuration (e.g., minimum review counts, recency/activity windows, evidence weights) and allow recording the exact policy used per run.
+- FR-007: The system MUST generate a “candidate titles” output that lists qualifying apps with accompanying metrics and references to the evidence that justified inclusion.
+- FR-008: The system MUST support sampling modes (e.g., top/popular, mid-tier, long-tail) to enable fast exploratory analysis before full-scale runs.
+- FR-009: The system MUST record performance/health metrics sufficient to compare strategies across runs (e.g., items processed, external calls avoided, errors, throughput), without mandating a specific telemetry stack.
+- FR-010: The system MUST document the storage layout conventions (partitions, naming, run IDs) and the schemas for refined/candidate outputs in plain prose artifacts that ship with the repo.
+- FR-011: The system MUST provide a basic audit mechanism to trace any refined/candidate record back to its raw sources and the policy used to include/exclude it.
+- FR-012: The system MUST be usable entirely in a local developer environment by default, with a clearly-defined path to durable object storage in a hosted environment.
+- FR-013: The system MUST avoid storing personally identifiable information and MUST comply with the target platforms’ terms of use; if constraints limit usage, the system MUST make those constraints configurable and documented. [NEEDS CLARIFICATION: Enumerate explicit policy constraints]
+- FR-014: The system MUST make retention policies configurable (how long to keep raw, refined, and candidate artifacts) and MUST support space-aware cleanup that keeps audit essentials. [NEEDS CLARIFICATION: Default retention targets]
+- FR-015: The system MUST provide guardrails to prevent accidental deletion of raw evidence when clearing refined/candidate outputs.
+- FR-016: The system SHOULD provide convenience notebooks and/or reports enabling empirical threshold discovery over refined datasets (distributions, correlations, outlier detection) without mandating a specific analytics engine.
+- FR-017: The system SHOULD provide test fixtures and small public sample slices to allow CI validation without bundling large datasets.
+
+### Key Entities (data-oriented)
+- Run: A single execution instance (ingestion or refinement) capturing timing, parameters, and outcomes.
+- Partition: A time-based or run-based subdivision of storage (used to organize raw and refined artifacts).
+- Raw Artifact: Source evidence captured as-is from external systems, immutable once written.
+- Refined Dataset: Standardized, de-duplicated, and query-friendly view derived from raw artifacts.
+- Threshold Policy: A set of criteria used to select or score titles for candidacy.
+- Candidate Set: The resulting list of titles proposed for production indexing, with supporting metrics and references to evidence.
+- Audit Record: Linkage that explains how a refined/candidate record was produced from raw sources and under which policy.
+
+---
+
+## Review & Acceptance Checklist
+
+### Content Quality
+- [x] No mandatory implementation details (specific technologies) are required to understand the feature’s value
+- [x] Focused on user value (durability, cost efficiency, evidence-based selection)
+- [x] Written for non-technical stakeholders, emphasizing outcomes and controls
+- [x] All mandatory sections completed
+
+### Requirement Completeness
+- [ ] No [NEEDS CLARIFICATION] markers remain (to be resolved in planning)
+- [x] Requirements are testable and unambiguous at a business level
+- [x] Success criteria are measurable (counts, avoidance, reproducibility, traceability)
+- [x] Scope is bounded (ingest → refine → candidate; local-first, path to hosted)
+- [x] Dependencies and assumptions identified (external API, storage capacity, policy constraints)
+
+---
+
+## Execution Status
+
+- [x] User description parsed
+- [x] Key concepts extracted
+- [x] Ambiguities marked
+- [x] User scenarios defined
+- [x] Requirements generated
+- [x] Entities identified
+- [ ] Review checklist passed (pending clarifications)
