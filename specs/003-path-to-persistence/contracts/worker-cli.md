@@ -20,6 +20,10 @@ This feature primarily adds a background worker, not new HTTP endpoints. The con
 - --mode=[full|popular|mid|longtail]
  - --news-tags=patchnotes|all (default: all; when 'patchnotes', also compute PatchNotesRatio)
  - --reviews-language=all --reviews-type=all --reviews-purchase=steam --reviews-per-page=100
+ - --silver-min-unique-words=20 (applied in normalization, not Bronze capture)
+ - --silver-exclude-free-received=true
+ - --gold-review-cap-per-app=200 (extend cap for promoted candidates via delta fetch)
+ - --gold-embedding-metadata-weight=0.05 (blend weight for metadata vs review embeddings)
 
 ## Outputs
 - Exit code 0 on success; nonzero on failure.
@@ -43,6 +47,7 @@ This feature primarily adds a background worker, not new HTTP endpoints. The con
 ## External Endpoints & Behaviors
 - News: `ISteamNews/GetNewsForApp/v2` with optional `tags=patchnotes`; consider pinning version in requests.
 - Reviews: `https://store.steampowered.com/appreviews/{appid}?json=1` with cursor pagination. Start with `cursor=*` and follow URL-encoded cursors until completion. Respect per-app review cap at Bronze.
+- Tiered capture: After derive step selects Gold candidates, perform targeted review deltas for those appids up to `--gold-review-cap-per-app` prior to computing embeddings/metrics.
 - Workshop (optional Silver+): `IPublishedFileService/QueryFiles/v1` for UGC metrics.
 
 ## Sanitization & Metrics

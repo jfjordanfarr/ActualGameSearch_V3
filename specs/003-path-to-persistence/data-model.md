@@ -76,6 +76,19 @@ Date: 2025-09-25
  - avgDevResponseTimeHours: float
  - reviewUpdateVelocity: float (updates/day in window)
  - ugcMetrics?: { velocityPerMonth: float, maintenanceRate6m: float, uniqueAuthors: int }
+ - reviewAggs: {
+		positivity_rating: float,
+		gmean_word_count: float,
+		gmean_unique_word_count: float,
+		gmean_resonance_score: float,
+		gmean_hours_played: float,
+		gmean_num_games_owned: float,
+		gmean_author_num_reviews: float,
+		first_review_date: date,
+		last_review_date: date,
+		inferred_release_year: int
+	}
+ - reviewFilterApplied: { minUniqueWords: int, receivedForFree: bool }
 
 ### Candidate (Gold)
 - appId: int
@@ -84,6 +97,8 @@ Date: 2025-09-25
 - metrics: { totalReviews, recentReviews, upRatio, activityScore }
 - sources: string[] (paths/urls for evidence)
 - policyId: string
+ - embedding?: float[] (game-level vector; derived from weighted review embeddings ⊕ metadata embedding)
+ - reviewCapApplied?: int (actual cap used when promoting to Gold, e.g., 200)
 
 ### Manifest
 - dataset: enum [bronze, silver, gold]

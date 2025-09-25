@@ -35,6 +35,16 @@ Goal: Capture Steam data once (Bronze), refine into clean, queryable datasets (S
 Approach: Implement a local-first medallion data lake under `AI-Agent-Workspace/Artifacts/DataLake` using gzip JSON for Bronze and Parquet (Snappy) + manifest for Silver/Gold. A .NET Worker orchestrates ingestion with strict concurrency (max 4), exponential backoff, resumable checkpoints, and configurable cadences (weekly store/news; delta reviews). Reviews are stored with full text in Bronze but capped per app (default 10). Silver annotates content types (games/DLC/demos/workshop), normalizes fields, and deduplicates; Gold emits a candidate list with metrics and citations to raw evidence.
 Additionally, Silver introduces `NewsItemRefined` with sanitized `bodyClean` and `isPatchNotes`, and `RefinedGame` accumulates derived metrics (patchNotesRatio, devResponseRate, avgDevResponseTimeHours, reviewUpdateVelocity, ugcMetrics?).
 
+SteamSeeker 2023 infusions (evidence-based metrics and workflow):
+- Multilingual-safe text cleaning for reviews/store text (strip HTML/BBCode/links/newlines; avoid alpha-only filters to preserve non-Latin scripts).
+- Review-level filters (applied at Silver during normalization, not at Bronze acquisition):
+   - unique_word_count >= 20 (configurable), received_for_free == false (configurable), optional naughty-word filters deferred to analysis.
+   - Compute per-app review_counts and allow Gold policies to require thresholds (e.g., >= 20) when cap allows.
+- Derived review metrics (Silver): positivity_rating (up ratio), geometric means: word_count, unique_word_count, resonance_score, playtime_forever, num_games_owned, author_num_reviews.
+- Time-weighted resonance: resonance_score / log_base_365(max(days_since_review, 1)) for recency emphasis.
+- Game-level embedding derivation (Gold): weighted average of top-K review embeddings by time-weighted resonance, blended with a small metadata embedding weight (default 95% reviews, 5% metadata); K default up to 200 when available.
+- Tiered capture policy: Bronze defaults to 10 reviews/app for breadth; upon promotion to Gold, extend Bronze for those appids up to a higher cap (e.g., 200) via delta fetch, then compute embeddings/metrics—still “fetch once, enrich later.”
+
 ## Technical Context
 **Language/Version**: C# 12 (.NET 8.0)
 **Primary Dependencies**: .NET Aspire (orchestration), System.Net.Http, Polly (retry/backoff) [planned], Parquet.NET (Parquet writer) [planned], Newtonsoft.Json/System.Text.Json
@@ -44,7 +54,7 @@ Additionally, Silver introduces `NewsItemRefined` with sanitized `bodyClean` and
 **Project Type**: single (src/* projects; Worker for ETL, Api unchanged)
 **Performance Goals**: Respect max 4 concurrent outbound requests; avoid redundant calls via checkpoints; ingest long-tail over hours; weekly maintenance feasible on a developer laptop
 **Constraints**: No PII persisted; preserve review links; adhere to platform TOS; retention configurable; local-first with a path to durable object storage later
-**Scale/Scope**: All Steam appids with ≥1 review included at Bronze; review capture capped per app (default 10); datasets in the tens of thousands of titles with mixed content types
+**Scale/Scope**: All Steam appids with ≥1 review included at Bronze; review capture capped per app (default 10) with tiered extension for promoted Gold candidates (e.g., up to 200); datasets in the tens of thousands of titles with mixed content types
 
 ## Constitution Check
 Gate: Must pass before Phase 0 research. Re-check after Phase 1 design.
@@ -96,6 +106,7 @@ Unknowns resolved and decisions recorded in research.md:
 - Backoff: Exponential backoff with jitter using Polly (if added) or custom minimal logic.
 - Sampling modes: small seeds (popular/mid/long-tail) supported via CLI flags.
 - Retention defaults: remain configurable; not hard-coded in planning (documented as TBD values).
+- SteamSeeker-derived metrics and multilingual handling to be incorporated in Silver/Gold computations; tiered review capture introduced to reconcile storage cost vs metric fidelity.
 
 Output: research.md created with decisions, rationale, alternatives.
 
@@ -105,6 +116,12 @@ Design outputs created:
 2) contracts/: No new public HTTP endpoints in this feature. Added worker CLI contract and file layout contract documentation.
 3) quickstart.md: How to run the worker locally (post-implementation), directory layout, and smoke checks.
 4) Agent context: Will be updated via `.specify/scripts/bash/update-agent-context.sh copilot`.
+
+Appendix: SteamSeeker-derived metric definitions (to guide implementation tests)
+- positivity_rating = count(voted_up)/count(all)
+- geometric means: use gmean over clipped-to-≥1 values for: word_count, unique_word_count, resonance_score, author.playtime_forever, author.num_games_owned, author.num_reviews
+- time_weighted_resonance(review) = resonance_score / log_365(max(days_since_review, 1))
+- game_embedding(review+metadata): average of review embeddings weighted by time_weighted_resonance, then blend with metadata embedding: E_game = average(E_reviews, weights=w_i) ⊕ 0.05·E_metadata (defaults: weights normalized; metadata weight configurable)
 
 Re-check Constitution: Post-Design PASS.
 

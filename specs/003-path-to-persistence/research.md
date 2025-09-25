@@ -45,6 +45,22 @@ Spec: /workspaces/ActualGameSearch_V3/specs/003-path-to-persistence/spec.md
 - Rationale: Rich fields include `developer_response`, `timestamp_dev_responded`, `timestamp_created`, `timestamp_updated`, `comment_count`, and author playtime stats; supports derivation of responsiveness and sentiment-change metrics.
 - Alternatives: Steam Web API review summary endpoints – insufficient granularity.
 
+8.1) Multilingual Text Handling & Cleaning
+- Decision: Apply multilingual-safe cleaning at Silver (preserve original at Bronze). Strip HTML/BBCode, links, newlines, excessive repetition, backslashes; avoid filters that drop non-Latin scripts.
+- Rationale: SteamSeeker-2023 showed non-Latin content suffers from naïve alpha-only regex; preserving multi-language integrity is essential for worldwide coverage.
+
+8.2) Review Filters (Silver normalization stage)
+- Decision: Configurable filters replicated from SteamSeeker experience: unique_word_count ≥ 20; received_for_free == false. Naughty-word filtering deferred to analysis, not default pipeline.
+- Rationale: Improves signal quality for embeddings and derived metrics while keeping Bronze evidence intact.
+
+8.3) Time-Weighted Resonance & Geometric Means
+- Decision: Compute time_weighted_resonance = resonance_score / log_base_365(max(days_since_review, 1)); compute geometric means (clip to ≥1) for word_count, unique_word_count, resonance_score, author.playtime_forever, author.num_games_owned, author.num_reviews.
+- Rationale: Encodes recency and stabilizes heavy-tailed distributions.
+
+8.4) Tiered Review Capture Policy
+- Decision: Keep Bronze default cap at 10 reviews/app for breadth. When an app is promoted as a Gold candidate, run a targeted delta to extend its Bronze reviews up to a higher cap (e.g., 200) before embeddings and metric derivation.
+- Rationale: Balances storage cost and fidelity while honoring “fetch once” via resumable deltas.
+
 9) Workshop/UGC Signals (Optional, Silver+)
 - Decision: For apps with Workshop, query IPublishedFileService/QueryFiles (cursor-based) to compute UGC velocity, maintenance rate, and unique author count.
 - Rationale: Strong long-term health indicator; complements reviews/news signals.
