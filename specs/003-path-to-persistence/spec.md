@@ -36,6 +36,15 @@
 
 ---
 
+## Clarifications
+
+### Session 2025-09-25
+- Q: What qualifies for Bronze inclusion and how should reviews be captured? → A: Include any app with at least one published review; capture full review payloads in Bronze while capping stored reviews per app to a small configurable maximum (default 10) to control local storage.
+- Q: Should non-game content (DLC, demos, soundtracks, tools, workshop) be excluded? → A: Do not exclude by type at Bronze if reviewed; capture all reviewed appids and classify/annotate content type during Silver to allow inclusion (e.g., DLC, workshop) in downstream relevance and recommendations.
+- Q: What concurrency and iteration strategy should ingestion follow? → A: Strict cap of max 4 parallel outbound requests with backoff; prefer random-without-replacement iteration over large appid sets; runs must be resumable from last success checkpoints.
+- Q: What are the default recrawl cadences? → A: Weekly recrawl of store pages and news/patch notes; reviews fetched as deltas by page/cursor policy; all cadences are configurable.
+- Q: What storage layout and formats should be used locally? → A: Data lake root under `AI-Agent-Workspace/Artifacts/DataLake` with Bronze JSON (gzip) and Silver/Gold Parquet (Snappy) plus a manifest; aim for an Iceberg-compatible path in the future but do not mandate it now.
+
 ## User Scenarios & Testing (mandatory)
 
 ### Primary User Story
@@ -54,6 +63,7 @@ As the project maintainer, I want to capture Steam game data once and retain the
 - Content type differences (games vs DLC/demos/non-games). The system must provide filters and reasons for exclusion.
 - Clock/timezone inconsistencies across sources. The system must normalize timestamps at refinement time.
 - Data retention vs cost constraints. The system must make retention configurable while preserving auditability of decisions.
+ - Duplicate or localized variants of titles across multiple appids (region/language-specific releases). The system should detect and annotate potential duplicates during Silver for de-dup/reconciliation analysis.
 
 ## Requirements (mandatory)
 
@@ -70,11 +80,16 @@ As the project maintainer, I want to capture Steam game data once and retain the
 - FR-010: The system MUST document the storage layout conventions (partitions, naming, run IDs) and the schemas for refined/candidate outputs in plain prose artifacts that ship with the repo.
 - FR-011: The system MUST provide a basic audit mechanism to trace any refined/candidate record back to its raw sources and the policy used to include/exclude it.
 - FR-012: The system MUST be usable entirely in a local developer environment by default, with a clearly-defined path to durable object storage in a hosted environment.
-- FR-013: The system MUST avoid storing personally identifiable information and MUST comply with the target platforms’ terms of use; if constraints limit usage, the system MUST make those constraints configurable and documented. [NEEDS CLARIFICATION: Enumerate explicit policy constraints]
-- FR-014: The system MUST make retention policies configurable (how long to keep raw, refined, and candidate artifacts) and MUST support space-aware cleanup that keeps audit essentials. [NEEDS CLARIFICATION: Default retention targets]
+- FR-013: The system MUST avoid storing PII (e.g., usernames, profiles) and MUST comply with platform terms; preserve review hyperlinks for provenance while stripping PII; store full review text in Bronze subject to a configurable per-app cap.
+- FR-014: The system MUST make retention policies configurable (how long to keep raw, refined, and candidate artifacts) and MUST support space-aware cleanup that keeps audit essentials. Defaults will be defined after cost/size analysis; defer default values to planning.
 - FR-015: The system MUST provide guardrails to prevent accidental deletion of raw evidence when clearing refined/candidate outputs.
 - FR-016: The system SHOULD provide convenience notebooks and/or reports enabling empirical threshold discovery over refined datasets (distributions, correlations, outlier detection) without mandating a specific analytics engine.
 - FR-017: The system SHOULD provide test fixtures and small public sample slices to allow CI validation without bundling large datasets.
+ - FR-018: Bronze inclusion MUST include any appid with at least one published review; do not exclude DLC/demos/workshop at Bronze—content types are annotated in Silver for downstream filtering and recommendations.
+ - FR-019: Bronze reviews MUST capture full review payloads; a configurable limit (default 10) caps the number of stored review documents per app to control local storage footprint.
+ - FR-020: Ingestion MUST enforce a hard cap of 4 concurrent outbound requests with exponential backoff, random-without-replacement iteration over appids, and resumable checkpoints.
+ - FR-021: Default recrawl cadences MUST be weekly for store pages and news/patch notes and delta-based for reviews (by page/cursor); cadences must be configurable.
+ - FR-022: The local data lake root MUST be `AI-Agent-Workspace/Artifacts/DataLake`; Bronze stored as gzip-compressed JSON; Silver/Gold stored as Parquet with Snappy compression and an accompanying manifest; an Iceberg-compatible path is a future objective but not a hard requirement.
 
 ### Key Entities (data-oriented)
 - Run: A single execution instance (ingestion or refinement) capturing timing, parameters, and outcomes.
