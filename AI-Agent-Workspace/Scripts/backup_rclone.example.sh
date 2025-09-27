@@ -21,6 +21,10 @@ set -euo pipefail
 # Notes:
 #   - This script is conservative by default. Set DRY_RUN=1 to preview changes.
 #   - It syncs the local lake root to the remote bucket. Use filters to narrow scope.
+#
+# Debugging tips:
+#   - Set VERBOSE=1 to print rclone operations verbosely.
+#   - Set PROBE=1 to run a quick "lsjson" on the remote root before syncing, to confirm connectivity.
 
 REMOTE_NAME="${1:-}"
 BUCKET_NAME="${2:-}"
@@ -69,12 +73,27 @@ fi
 
 # Respect DRY_RUN env toggle
 RCLONE_FLAGS=("--progress" "--fast-list" "--checksum")
+if [[ "${VERBOSE:-0}" == "1" ]]; then
+  RCLONE_FLAGS+=("-v")
+fi
 if [[ "${DRY_RUN:-0}" == "1" ]]; then
   RCLONE_FLAGS+=("--dry-run")
 fi
 
 # Pass-through extra include/exclude filters, etc.
 EXTRA_FILTERS=("$@")
+
+# Optional preflight probe to validate remote connectivity
+if [[ "${PROBE:-0}" == "1" ]]; then
+  echo "Running preflight probe against remote to validate connectivity..." >&2
+  if [[ "${EPHEMERAL_MODE}" == "1" ]]; then
+    AWS_ACCESS_KEY_ID="${R2_ACCESS_KEY_ID}" \
+    AWS_SECRET_ACCESS_KEY="${R2_SECRET_ACCESS_KEY}" \
+    rclone lsjson "${DEST}" --max-depth 1 | head -n 5 || true
+  else
+    rclone lsjson "${DEST}" --max-depth 1 | head -n 5 || true
+  fi
+fi
 
 # Show size summary before sync (safe)
 echo "Local lake size summary:" && du -sh "${LAKE_ROOT}"/* || true

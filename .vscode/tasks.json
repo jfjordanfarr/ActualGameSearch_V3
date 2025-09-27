@@ -12,6 +12,31 @@
         "Debug"
       ],
       "problemMatcher": ["$msCompile"]
+    },
+    {
+      "label": "run AppHost: worker bronze ingest",
+      "type": "shell",
+      "command": "dotnet",
+      "args": [
+        "run",
+        "--project",
+        "${workspaceFolder}/src/ActualGameSearch.AppHost/ActualGameSearch.AppHost.csproj",
+        "-c",
+        "Debug"
+      ],
+      "options": {
+        "env": {
+          // Worker args: tweak sample/counts safely; default concurrency=1 to reduce 429s
+          "BRONZE_INGEST_ARGS": "ingest bronze --sample=600 --reviews-cap-per-app=100 --news-tags=all --news-count=20 --concurrency=1",
+          // In Codespaces, Aspire Dashboard uses this OTLP HTTP URL; already read by ServiceDefaults
+          "ASPIRE_DASHBOARD_OTLP_HTTP_ENDPOINT_URL": "http://127.0.0.1:18889"
+        }
+      },
+      "problemMatcher": ["$msCompile"],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
     }
   ]
 }

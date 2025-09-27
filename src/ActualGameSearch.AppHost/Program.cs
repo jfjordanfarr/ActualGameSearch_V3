@@ -10,8 +10,7 @@ var otlp = Environment.GetEnvironmentVariable("ASPIRE_DASHBOARD_OTLP_HTTP_ENDPOI
 
 var builder = DistributedApplication.CreateBuilder(args);
 
-// Add the Aspire Dashboard (includes an OTLP collector at the configured endpoint)
-builder.AddDashboard();
+// Dashboard not wired programmatically in this version; exporters still respect OTLP env.
 
 // Cosmos DB emulator with Data Explorer for DX
 var cosmos = builder.AddAzureCosmosDB("cosmos-db").RunAsPreviewEmulator(emulator =>
@@ -49,5 +48,17 @@ var worker = builder.AddProject<Projects.ActualGameSearch_Worker>("worker")
 					.WithEnvironment("Ollama:Endpoint", ollama.GetEndpoint("http"))
 					.WithEnvironment("ASPIRE_DASHBOARD_OTLP_HTTP_ENDPOINT_URL", otlp)
 					.WaitFor(ollama);
+
+// Optionally start the Worker in a specific mode by passing CLI args via env var
+// Example: BRONZE_INGEST_ARGS="ingest bronze --sample=600 --reviews-cap-per-app=100 --news-tags=all --news-count=20 --concurrency=1"
+var bronzeArgs = Environment.GetEnvironmentVariable("BRONZE_INGEST_ARGS");
+if (!string.IsNullOrWhiteSpace(bronzeArgs))
+{
+	// Split on spaces; quoted values are uncommon for our flags. Adjust if needed.
+	var workerArgs = bronzeArgs
+		.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+		.ToArray();
+	worker.WithArgs(workerArgs);
+}
 
 builder.Build().Run();
