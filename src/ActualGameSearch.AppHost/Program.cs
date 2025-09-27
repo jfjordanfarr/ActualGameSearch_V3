@@ -10,6 +10,9 @@ var otlp = Environment.GetEnvironmentVariable("ASPIRE_DASHBOARD_OTLP_HTTP_ENDPOI
 
 var builder = DistributedApplication.CreateBuilder(args);
 
+// Add the Aspire Dashboard (includes an OTLP collector at the configured endpoint)
+builder.AddDashboard();
+
 // Cosmos DB emulator with Data Explorer for DX
 var cosmos = builder.AddAzureCosmosDB("cosmos-db").RunAsPreviewEmulator(emulator =>
 {
