@@ -306,7 +306,10 @@ internal class Program
 			int reviewsCapPerApp = int.TryParse(builder.Configuration["Ingestion:ReviewCapBronze"], out var rcb) ? rcb : 50;
 			int newsCount = int.TryParse(builder.Configuration["Ingestion:NewsCountBronze"], out var ncb) ? ncb : 10;
 			string? newsTags = builder.Configuration["Ingestion:NewsTags"];
-			int concurrency = int.TryParse(builder.Configuration["Ingestion:Concurrency"], out var cc) ? cc : 4;
+			// Default to 1 to reduce 429s; prefer explicit Ingestion:Concurrency, else fall back to Ingestion:MaxConcurrency, else 1
+			int concurrency = 1;
+			if (int.TryParse(builder.Configuration["Ingestion:Concurrency"], out var cc)) concurrency = cc;
+			else if (int.TryParse(builder.Configuration["Ingestion:MaxConcurrency"], out var mcc)) concurrency = mcc;
 			string? resumeRunId = null;
 
 			// Parse simple --key=value flags

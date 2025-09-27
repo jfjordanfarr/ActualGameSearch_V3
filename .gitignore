@@ -426,3 +426,7 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+# Local data lake artifacts (do not commit large binary data)
+AI-Agent-Workspace/Artifacts/DataLake/
+AI-Agent-Workspace/Artifacts/exports/

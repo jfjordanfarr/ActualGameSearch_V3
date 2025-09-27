@@ -5,9 +5,8 @@ using System;
 #pragma warning disable ASPIRECOSMOSDB001 // Opt-in to preview emulator for Data Explorer
 
 // Provide sane defaults for the Aspire Dashboard in Codespaces
-// Remove environment variable settings for the Aspire Dashboard
-// Environment.SetEnvironmentVariable("ASPNETCORE_URLS", Environment.GetEnvironmentVariable("ASPNETCORE_URLS") ?? "http://127.0.0.1:18888");
-// Environment.SetEnvironmentVariable("ASPIRE_DASHBOARD_OTLP_HTTP_ENDPOINT_URL", Environment.GetEnvironmentVariable("ASPIRE_DASHBOARD_OTLP_HTTP_ENDPOINT_URL") ?? "http://127.0.0.1:18889");
+// If a dashboard is running, set its OTLP HTTP endpoint for exporters.
+var otlp = Environment.GetEnvironmentVariable("ASPIRE_DASHBOARD_OTLP_HTTP_ENDPOINT_URL") ?? "http://127.0.0.1:18889";
 
 var builder = DistributedApplication.CreateBuilder(args);
 
@@ -36,6 +35,7 @@ var api = builder.AddProject<Projects.ActualGameSearch_Api>("api")
 					  .WaitFor(db)
 				 // Route Ollama endpoint into the API via environment using the discovered endpoint
 				 .WithEnvironment("Ollama:Endpoint", ollama.GetEndpoint("http"))
+				 .WithEnvironment("ASPIRE_DASHBOARD_OTLP_HTTP_ENDPOINT_URL", otlp)
 				 .WaitFor(ollama);
 
 var worker = builder.AddProject<Projects.ActualGameSearch_Worker>("worker")
@@ -44,6 +44,7 @@ var worker = builder.AddProject<Projects.ActualGameSearch_Worker>("worker")
 						  .WaitFor(db)
 					// Route Ollama endpoint into the Worker via environment using the discovered endpoint
 					.WithEnvironment("Ollama:Endpoint", ollama.GetEndpoint("http"))
+					.WithEnvironment("ASPIRE_DASHBOARD_OTLP_HTTP_ENDPOINT_URL", otlp)
 					.WaitFor(ollama);
 
 builder.Build().Run();

@@ -100,7 +100,8 @@ public static class ServiceDefaultsExtensions
             .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
             {
                 AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
-                MaxConnectionsPerServer = 4,
+                // Keep a single connection to respect Steam API rate limits and reduce 429s.
+                MaxConnectionsPerServer = 1,
                 PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2),
             })
             .AddStandardResilienceHandler(options =>
