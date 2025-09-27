@@ -7,6 +7,8 @@ using System;
 // Provide sane defaults for the Aspire Dashboard in Codespaces
 // If a dashboard is running, set its OTLP HTTP endpoint for exporters.
 var otlp = Environment.GetEnvironmentVariable("ASPIRE_DASHBOARD_OTLP_HTTP_ENDPOINT_URL") ?? "http://127.0.0.1:18889";
+// Also set standard OTEL endpoint env used by .NET OTLP exporters
+Environment.SetEnvironmentVariable("OTEL_EXPORTER_OTLP_ENDPOINT", otlp);
 
 var builder = DistributedApplication.CreateBuilder(args);
 
@@ -38,6 +40,7 @@ var api = builder.AddProject<Projects.ActualGameSearch_Api>("api")
 				 // Route Ollama endpoint into the API via environment using the discovered endpoint
 				 .WithEnvironment("Ollama:Endpoint", ollama.GetEndpoint("http"))
 				 .WithEnvironment("ASPIRE_DASHBOARD_OTLP_HTTP_ENDPOINT_URL", otlp)
+				 .WithEnvironment("OTEL_EXPORTER_OTLP_ENDPOINT", otlp)
 				 .WaitFor(ollama);
 
 var worker = builder.AddProject<Projects.ActualGameSearch_Worker>("worker")
@@ -47,6 +50,9 @@ var worker = builder.AddProject<Projects.ActualGameSearch_Worker>("worker")
 					// Route Ollama endpoint into the Worker via environment using the discovered endpoint
 					.WithEnvironment("Ollama:Endpoint", ollama.GetEndpoint("http"))
 					.WithEnvironment("ASPIRE_DASHBOARD_OTLP_HTTP_ENDPOINT_URL", otlp)
+					.WithEnvironment("OTEL_EXPORTER_OTLP_ENDPOINT", otlp)
+					// Ensure data lake writes go to the repo-level AI-Agent-Workspace, not under the Worker project
+					.WithEnvironment("DataLake:Root", "../../AI-Agent-Workspace/Artifacts/DataLake")
 					.WaitFor(ollama);
 
 // Optionally start the Worker in a specific mode by passing CLI args via env var

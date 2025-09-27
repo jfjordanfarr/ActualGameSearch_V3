@@ -39,12 +39,34 @@ public class SteamHttpClient : ISteamClient
     public async Task<(SteamReviewsResponse? payload, HttpStatusCode status)> GetReviewsPageAsync(int appId, string cursor = "*", int perPage = 100, string filter = "recent", string language = "all", string purchaseType = "all", CancellationToken ct = default)
     {
         // Polite tiny jitter between pages
-        try { await Task.Delay(TimeSpan.FromMilliseconds(Random.Shared.Next(15, 45)), ct); } catch { }
+        try { await Task.Delay(TimeSpan.FromMilliseconds(Random.Shared.Next(25, 95)), ct); } catch { }
         var cursorEnc = Uri.EscapeDataString(cursor);
         var url =
             $"https://store.steampowered.com/appreviews/{appId}?json=1&filter={filter}&language={language}&purchase_type={purchaseType}&num_per_page={perPage}&cursor={cursorEnc}";
         using var resp = await Client.GetAsync(url, ct);
         var status = resp.StatusCode;
+        if ((int)status == 429)
+        {
+            // Honor Retry-After if present; otherwise wait a reasonable default before signaling caller
+            try
+            {
+                if (resp.Headers.RetryAfter is { } ra)
+                {
+                    if (ra.Delta.HasValue) await Task.Delay(ra.Delta.Value + TimeSpan.FromMilliseconds(Random.Shared.Next(25, 120)), ct);
+                    else if (ra.Date.HasValue)
+                    {
+                        var delta = ra.Date.Value - DateTimeOffset.UtcNow;
+                        if (delta > TimeSpan.Zero) await Task.Delay(delta + TimeSpan.FromMilliseconds(Random.Shared.Next(25, 120)), ct);
+                    }
+                }
+                else
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(6 + Random.Shared.NextDouble() * 4), ct);
+                }
+            }
+            catch { }
+            return (null, status);
+        }
         if (!resp.IsSuccessStatusCode) return (null, status);
         var json = await resp.Content.ReadAsStringAsync(ct);
         var payload = JsonSerializer.Deserialize<SteamReviewsResponse>(json, _json);

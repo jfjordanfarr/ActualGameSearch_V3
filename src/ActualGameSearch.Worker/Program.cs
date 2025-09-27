@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Linq;
+using System.IO;
 using System.Net.Http.Json;
 using System.Net.Http.Headers;
 using System.Text;
@@ -258,7 +259,7 @@ internal class Program
 		if (args.Length >= 2 && args[0] == "ingest" && args[1] == "bronze-reviews-sample")
 		{
 			var steam = host.Services.GetRequiredService<ISteamClient>();
-			var dataRoot = builder.Configuration["DataLake:Root"] ?? "AI-Agent-Workspace/Artifacts/DataLake";
+			var dataRoot = ResolveDataRoot(builder.Configuration["DataLake:Root"]);
 			var cap = int.TryParse(builder.Configuration["Ingestion:ReviewCapBronze"], out var rc) ? rc : 10;
 			var runId = $"run-{DateTime.UtcNow:yyyyMMdd-HHmmss}";
 			var today = DateTime.UtcNow.Date;
@@ -301,7 +302,7 @@ internal class Program
 		//   ingest bronze [--sample=250] [--reviews-cap-per-app=50] [--news-count=10] [--news-tags=patchnotes] [--concurrency=4] [--data-root=...]
 		if (args.Length >= 2 && args[0] == "ingest" && args[1] == "bronze")
 		{
-			var dataRoot = builder.Configuration["DataLake:Root"] ?? "AI-Agent-Workspace/Artifacts/DataLake";
+			var dataRoot = ResolveDataRoot(builder.Configuration["DataLake:Root"]);
 			int sampleCount = samplingCount; // default from config
 			int reviewsCapPerApp = int.TryParse(builder.Configuration["Ingestion:ReviewCapBronze"], out var rcb) ? rcb : 50;
 			int newsCount = int.TryParse(builder.Configuration["Ingestion:NewsCountBronze"], out var ncb) ? ncb : 10;
@@ -493,17 +494,11 @@ internal class Program
 					["type"] = type
 				};
 
-				// Precompute game embedding but DEFER game upsert until at least one review is persisted
+				// Prepare game description text; embeddings computed later only for sufficiently-reviewed games
 				float[]? pendingGameVector = null;
-				if (games is not null)
-				{
-					var cleanDetailed = !string.IsNullOrWhiteSpace(dapp.detailed_description) ? EmbeddingUtils.StripHtml(dapp.detailed_description!) : string.Empty;
-					var combinedDesc = string.Join("\n\n", new[] { dapp.short_description, cleanDetailed }.Where(s => !string.IsNullOrWhiteSpace(s))!);
-					if (!string.IsNullOrWhiteSpace(combinedDesc))
-					{
-						pendingGameVector = (await EmbeddingUtils.GenerateVectorsAsync(http, ollamaEndpoint, ollamaModel, new List<string> { combinedDesc }, dims, allowDeterministicFallback, embNumCtx, embMaxBatch)).First();
-					}
-				}
+				string? combinedDesc = null;
+				var cleanDetailed = !string.IsNullOrWhiteSpace(dapp.detailed_description) ? EmbeddingUtils.StripHtml(dapp.detailed_description!) : string.Empty;
+				combinedDesc = string.Join("\n\n", new[] { dapp.short_description, cleanDetailed }.Where(s => !string.IsNullOrWhiteSpace(s))!);
 
 				// Strict: fetch real reviews; then filter to qualified ones before embedding/persisting
 				var realReviews = await TryFetchSteamReviewsPaginatedAsync(steamHttp, appId, maxReviewsPerGame);
@@ -585,6 +580,15 @@ internal class Program
 				// Only persist the game and patch notes if we wrote at least the qualified threshold
 				if (reviewsWritten >= minQualifiedReviews && games is not null)
 				{
+					// New: run embeddings for game descriptions only if there are at least 20 total fetched reviews
+					if (pendingGameVector is null && !string.IsNullOrWhiteSpace(combinedDesc) && (dapp.recommendations?.total ?? 0) >= 20)
+					{
+						try
+						{
+							pendingGameVector = (await EmbeddingUtils.GenerateVectorsAsync(http, ollamaEndpoint, ollamaModel, new List<string> { combinedDesc! }, dims, allowDeterministicFallback, embNumCtx, embMaxBatch)).FirstOrDefault();
+						}
+						catch { /* embedding failure is non-fatal for game doc */ }
+					}
 					if (pendingGameVector is not null)
 					{
 						gameDoc[gamesVectorPath.TrimStart('/')] = pendingGameVector.ToArray();
@@ -672,6 +676,34 @@ internal class Program
 				var vec = (await EmbeddingUtils.GenerateVectorsAsync(http, ollamaEndpoint, ollamaModel, new List<string> { probe }, dims, allowDeterministicFallback, embNumCtx, embMaxBatch)).First();
 			await VectorProbe.TryProbeAsync(reviews, dbName!, reviewsContainer!, distance, vec, formPref, fieldPath: vectorPath);
 		}
+	}
+
+	private static string ResolveDataRoot(string? configured)
+	{
+		// Prefer configured absolute/relative path if provided
+		if (!string.IsNullOrWhiteSpace(configured))
+		{
+			var path = configured;
+			if (!Path.IsPathRooted(path)) path = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, path));
+			return path;
+		}
+		// Default to repo-level AI-Agent-Workspace/Artifacts/DataLake to avoid writing under project bin/ directories when hosted by Aspire
+		// Try to detect solution root by walking up from BaseDirectory
+		var dir = new DirectoryInfo(AppContext.BaseDirectory);
+		for (int i = 0; i < 8 && dir?.Parent is not null; i++)
+		{
+			if (File.Exists(Path.Combine(dir.FullName, "ActualGameSearch.sln")))
+			{
+				var target = Path.Combine(dir.FullName, "AI-Agent-Workspace", "Artifacts", "DataLake");
+				Directory.CreateDirectory(target);
+				return target;
+			}
+			dir = dir.Parent;
+		}
+		// Fallback to a relative path from process directory
+		var fallback = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "AI-Agent-Workspace", "Artifacts", "DataLake"));
+		Directory.CreateDirectory(fallback);
+		return fallback;
 	}
 
 	// Intentionally removed any snippet fallback; strict ETL requires real reviews.

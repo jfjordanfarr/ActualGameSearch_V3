@@ -25,11 +25,20 @@ public class BronzeReviewIngestor
         var total = 0;
         var page = 1;
         string cursor = "*";
+        int throttleBackoffSeconds = 2;
         while (total < _capPerApp)
         {
             var remaining = _capPerApp - total;
             var perPage = Math.Min(100, remaining);
             var (payload, status) = await _steam.GetReviewsPageAsync(appId, cursor: cursor, perPage: perPage, ct: ct);
+            if ((int)status == 429)
+            {
+                // Too many requests – back off and retry same cursor/page without advancing
+                var delay = TimeSpan.FromSeconds(Math.Min(60, throttleBackoffSeconds) + Random.Shared.NextDouble());
+                try { await Task.Delay(delay, ct); } catch { }
+                throttleBackoffSeconds = Math.Min(60, throttleBackoffSeconds * 2); // exponential backoff up to 60s
+                continue;
+            }
             if (payload?.reviews is null || payload.reviews.Length == 0) break;
 
             var outPath = DataLakePaths.Bronze.ReviewsPage(_dataRoot, today, runId, appId, page);
@@ -57,6 +66,7 @@ public class BronzeReviewIngestor
             total += payload.reviews.Length;
             page++;
             cursor = payload.cursor ?? cursor;
+            throttleBackoffSeconds = 2; // reset after a successful page
             // Steam repeats the same cursor when done; stop if no progress
             if (payload.reviews.Length < perPage) break;
         }

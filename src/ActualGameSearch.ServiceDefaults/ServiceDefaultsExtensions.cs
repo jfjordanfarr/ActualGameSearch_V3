@@ -10,6 +10,7 @@ using OpenTelemetry.Exporter;
 using System.Diagnostics;
 using System.Net;
 using Microsoft.Extensions.Http.Resilience;
+using Polly;
 
 namespace ActualGameSearch.ServiceDefaults;
 
@@ -30,18 +31,24 @@ public static class ServiceDefaultsExtensions
             o.IncludeScopes = true;
             o.IncludeFormattedMessage = true;
             o.ParseStateValues = true;
-            var httpOtlp = Environment.GetEnvironmentVariable("ASPIRE_DASHBOARD_OTLP_HTTP_ENDPOINT_URL");
-            if (!string.IsNullOrWhiteSpace(httpOtlp) && Uri.TryCreate(httpOtlp, UriKind.Absolute, out var httpOtlpUri))
+            // Prefer standard OTEL envs set by Aspire; fall back to optional dashboard env
+            var endpointStr = Environment.GetEnvironmentVariable("OTEL_EXPORTER_OTLP_ENDPOINT")
+                               ?? Environment.GetEnvironmentVariable("ASPIRE_DASHBOARD_OTLP_HTTP_ENDPOINT_URL");
+            if (!string.IsNullOrWhiteSpace(endpointStr) && Uri.TryCreate(endpointStr, UriKind.Absolute, out var otlpUri))
             {
                 o.AddOtlpExporter(exp =>
                 {
-                    exp.Endpoint = httpOtlpUri;
+                    exp.Endpoint = otlpUri;
                     exp.Protocol = OtlpExportProtocol.HttpProtobuf;
                 });
             }
             else
             {
-                o.AddOtlpExporter();
+                // Still add exporter and let defaults/env drive it
+                o.AddOtlpExporter(exp =>
+                {
+                    exp.Protocol = OtlpExportProtocol.HttpProtobuf;
+                });
             }
         });
 
@@ -57,24 +64,26 @@ public static class ServiceDefaultsExtensions
                 .AddSource(activitySourceNames)
                 .AddOtlpExporter(exp =>
                 {
-                    var httpOtlp = Environment.GetEnvironmentVariable("ASPIRE_DASHBOARD_OTLP_HTTP_ENDPOINT_URL");
-                    if (!string.IsNullOrWhiteSpace(httpOtlp) && Uri.TryCreate(httpOtlp, UriKind.Absolute, out var httpOtlpUri))
+                    var endpointStr = Environment.GetEnvironmentVariable("OTEL_EXPORTER_OTLP_ENDPOINT")
+                                       ?? Environment.GetEnvironmentVariable("ASPIRE_DASHBOARD_OTLP_HTTP_ENDPOINT_URL");
+                    if (!string.IsNullOrWhiteSpace(endpointStr) && Uri.TryCreate(endpointStr, UriKind.Absolute, out var otlpUri))
                     {
-                        exp.Endpoint = httpOtlpUri;
-                        exp.Protocol = OtlpExportProtocol.HttpProtobuf;
+                        exp.Endpoint = otlpUri;
                     }
+                    exp.Protocol = OtlpExportProtocol.HttpProtobuf;
                 }))
             .WithMetrics(m => m
                 .AddRuntimeInstrumentation()
                 .AddAspNetCoreInstrumentation()
                 .AddOtlpExporter(exp =>
                 {
-                    var httpOtlp = Environment.GetEnvironmentVariable("ASPIRE_DASHBOARD_OTLP_HTTP_ENDPOINT_URL");
-                    if (!string.IsNullOrWhiteSpace(httpOtlp) && Uri.TryCreate(httpOtlp, UriKind.Absolute, out var httpOtlpUri))
+                    var endpointStr = Environment.GetEnvironmentVariable("OTEL_EXPORTER_OTLP_ENDPOINT")
+                                       ?? Environment.GetEnvironmentVariable("ASPIRE_DASHBOARD_OTLP_HTTP_ENDPOINT_URL");
+                    if (!string.IsNullOrWhiteSpace(endpointStr) && Uri.TryCreate(endpointStr, UriKind.Absolute, out var otlpUri))
                     {
-                        exp.Endpoint = httpOtlpUri;
-                        exp.Protocol = OtlpExportProtocol.HttpProtobuf;
+                        exp.Endpoint = otlpUri;
                     }
+                    exp.Protocol = OtlpExportProtocol.HttpProtobuf;
                 }));
 
         // Global HttpClient with standard resilience (applies to all clients by default)
@@ -106,12 +115,42 @@ public static class ServiceDefaultsExtensions
             })
             .AddStandardResilienceHandler(options =>
             {
-                options.Retry.MaxRetryAttempts = 5;
-                options.TotalRequestTimeout.Timeout = TimeSpan.FromSeconds(30);
-                options.AttemptTimeout.Timeout = TimeSpan.FromSeconds(10);
+                options.Retry.MaxRetryAttempts = 8;
+                options.Retry.BackoffType = DelayBackoffType.Exponential;
+                options.Retry.Delay = TimeSpan.FromSeconds(1);
+                options.Retry.UseJitter = true;
+                // Respect Retry-After header if provided (e.g., 429/503)
+                options.Retry.DelayGenerator = static args =>
+                {
+                    try
+                    {
+                        if (args.Outcome.Result is HttpResponseMessage resp)
+                        {
+                            if (resp.StatusCode == HttpStatusCode.TooManyRequests || resp.StatusCode == HttpStatusCode.ServiceUnavailable)
+                            {
+                                if (resp.Headers.RetryAfter is { } ra)
+                                {
+                                    if (ra.Delta.HasValue)
+                                        return new ValueTask<TimeSpan?>(ra.Delta.Value + TimeSpan.FromMilliseconds(Random.Shared.Next(25, 125)));
+                                    if (ra.Date.HasValue)
+                                    {
+                                        var delta = ra.Date.Value - DateTimeOffset.UtcNow;
+                                        if (delta > TimeSpan.Zero) return new ValueTask<TimeSpan?>(delta + TimeSpan.FromMilliseconds(Random.Shared.Next(25, 125)));
+                                    }
+                                }
+                                // Fallback when no header is present
+                                return new ValueTask<TimeSpan?>(TimeSpan.FromSeconds(5 + Random.Shared.NextDouble() * 5));
+                            }
+                        }
+                    }
+                    catch { }
+                    return new ValueTask<TimeSpan?>(null as TimeSpan?);
+                };
+                options.TotalRequestTimeout.Timeout = TimeSpan.FromSeconds(40);
+                options.AttemptTimeout.Timeout = TimeSpan.FromSeconds(12);
                 options.CircuitBreaker.SamplingDuration = TimeSpan.FromMinutes(2);
                 options.CircuitBreaker.MinimumThroughput = 20;
-                options.CircuitBreaker.FailureRatio = 0.2;
+                options.CircuitBreaker.FailureRatio = 0.15;
             });
 
         return builder;
