@@ -296,6 +296,113 @@ internal class Program
 			return;
 		}
 
+		// New: General Bronze ingestion (random-sampled) with flags
+		// Usage:
+		//   ingest bronze [--sample=250] [--reviews-cap-per-app=50] [--news-count=10] [--news-tags=patchnotes] [--concurrency=4] [--data-root=...]
+		if (args.Length >= 2 && args[0] == "ingest" && args[1] == "bronze")
+		{
+			var dataRoot = builder.Configuration["DataLake:Root"] ?? "AI-Agent-Workspace/Artifacts/DataLake";
+			int sampleCount = samplingCount; // default from config
+			int reviewsCapPerApp = int.TryParse(builder.Configuration["Ingestion:ReviewCapBronze"], out var rcb) ? rcb : 50;
+			int newsCount = int.TryParse(builder.Configuration["Ingestion:NewsCountBronze"], out var ncb) ? ncb : 10;
+			string? newsTags = builder.Configuration["Ingestion:NewsTags"];
+			int concurrency = int.TryParse(builder.Configuration["Ingestion:Concurrency"], out var cc) ? cc : 4;
+			string? resumeRunId = null;
+
+			// Parse simple --key=value flags
+			foreach (var a in args.Skip(2))
+			{
+				if (!a.StartsWith("--")) continue;
+				var idx = a.IndexOf('=');
+				string key = idx > 2 ? a.Substring(2, idx - 2) : a[2..];
+				string? val = idx > 0 && idx + 1 < a.Length ? a[(idx + 1)..] : null;
+				if (string.IsNullOrWhiteSpace(key) || val is null) continue;
+				switch (key)
+				{
+					case "data-root": dataRoot = val; break;
+					case "sample": if (int.TryParse(val, out var sc2)) sampleCount = sc2; break;
+					case "reviews-cap-per-app": if (int.TryParse(val, out var rc2)) reviewsCapPerApp = rc2; break;
+					case "news-count": if (int.TryParse(val, out var nc2)) newsCount = nc2; break;
+					case "news-tags": newsTags = (string.Equals(val, "all", StringComparison.OrdinalIgnoreCase) || string.Equals(val, "none", StringComparison.OrdinalIgnoreCase)) ? null : val; break;
+					case "concurrency": if (int.TryParse(val, out var c2)) concurrency = c2; break;
+					case "resume": resumeRunId = val; break;
+				}
+			}
+
+			var runId = !string.IsNullOrWhiteSpace(resumeRunId) ? resumeRunId! : $"run-{DateTime.UtcNow:yyyyMMdd-HHmmss}";
+			var today = DateTime.UtcNow.Date;
+			var steam = host.Services.GetRequiredService<ISteamClient>();
+			var mw = new ManifestWriter(dataRoot, runId, "bronze", new Dictionary<string, string>
+			{
+				["mode"] = "random-sample",
+				["sample"] = sampleCount.ToString(),
+				["reviewsCapPerApp"] = reviewsCapPerApp.ToString(),
+				["newsCount"] = newsCount.ToString(),
+				["newsTags"] = newsTags ?? "<all>",
+				["concurrency"] = Math.Clamp(concurrency, 1, 16).ToString()
+			});
+			mw.Start();
+
+			// Build app sample
+			int[] sampleApps;
+			try
+			{
+				var listResp = await steamHttp.GetFromJsonAsync<SteamAppListResponse>("https://api.steampowered.com/ISteamApps/GetAppList/v2/");
+				var all = listResp?.applist?.apps?.Select(a => a.appid).Where(id => id > 0).Distinct().ToArray() ?? Array.Empty<int>();
+				var rng = Random.Shared;
+				var sample = all.OrderBy(_ => rng.Next()).Take(Math.Clamp(sampleCount, 3, 5000)).ToArray();
+				int[] preferred = new[] { 620, 570, 440, 730, 292030, 271590, 1172470 };
+				sampleApps = preferred.Concat(sample).Distinct().ToArray();
+			}
+			catch
+			{
+				sampleApps = new[] { 620, 570, 440 };
+			}
+
+			var stateDir = Path.Combine(dataRoot, "bronze", "runstate");
+			var statePath = Path.Combine(stateDir, runId + ".json");
+			var runState = new RunStateTracker(runId, statePath);
+			var sem = new System.Threading.SemaphoreSlim(Math.Clamp(concurrency, 1, 16));
+			var tasks = new List<Task>();
+			var bronzeReviews = new BronzeReviewIngestor(steam, dataRoot, Math.Max(1, reviewsCapPerApp));
+			var bronzeStore = new BronzeStoreIngestor(steam, dataRoot);
+			var bronzeNews = new BronzeNewsIngestor(steam, dataRoot);
+
+			var cts = new System.Threading.CancellationTokenSource();
+			await foreach (var appId in runState.GetPendingShuffledAsync(sampleApps, cts.Token))
+			{
+				await sem.WaitAsync();
+				tasks.Add(Task.Run(async () =>
+				{
+					try
+					{
+						await runState.MarkStartedAsync(appId);
+						var rcount = await bronzeReviews.IngestReviewsAsync(appId, runId, today, cts.Token);
+						mw.RecordItem($"reviews:{appId}", rcount);
+						var scount = await bronzeStore.IngestStoreAsync(appId, runId, today, cts.Token);
+						mw.RecordItem($"store:{appId}", scount);
+						var ncount = await bronzeNews.IngestNewsAsync(appId, runId, today, count: newsCount, tags: newsTags, ct: cts.Token);
+						mw.RecordItem($"news:{appId}", ncount);
+						await runState.MarkSucceededAsync(appId);
+					}
+					catch (Exception ex)
+					{
+						mw.RecordError(ex);
+					}
+					finally
+					{
+						sem.Release();
+					}
+				}));
+			}
+
+			await Task.WhenAll(tasks);
+			mw.Finish();
+			await mw.SaveAsync();
+			Console.WriteLine($"Bronze ingest complete. Manifest: {DataLakePaths.Bronze.Manifest(dataRoot, runId)}");
+			return;
+		}
+
 		// Establish metrics
 		var meter = new Meter("ActualGameSearch.Worker", "1.0.0");
 		var appsProcessed = meter.CreateCounter<long>("etl.apps_processed");

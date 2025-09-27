@@ -93,6 +93,22 @@ As the project maintainer, I want to capture Steam game data once and retain the
  - FR-022: The local data lake root MUST be `AI-Agent-Workspace/Artifacts/DataLake`; Bronze stored as gzip-compressed JSON; Silver/Gold stored as Parquet with Snappy compression and an accompanying manifest; an Iceberg-compatible path is a future objective but not a hard requirement.
  - FR-023: The system MUST support tiered review capture: Bronze uses a small per-app cap by default for breadth, and Gold derivation MUST be able to trigger targeted review deltas to extend specific appids up to a higher cap before computing metrics/embeddings, without re-fetching already captured pages.
 
+#### Scale Targets and Content Scope (Bronze→Gold)
+- FR-029: Bronze/Silver scale targets per game SHOULD allow up to 2,000 reviews, 2,000 news items, and 2,000 workshop items captured, subject to practical API/page-size limits and runtime budgets; actual caps are configurable per run.
+- FR-030: Gold selection per game SHOULD target up to 200 reviews, 200 news items, and 200 workshop items, chosen by rank combining semantic richness (unique token count), community helpfulness, hours played (when available), and recency.
+- FR-031: Bronze news capture MUST NOT exclude by tag by default; tag filters (e.g., patchnotes) are optional flags. Silver MUST classify news into patch/update vs. marketing/other for downstream filtering.
+- FR-032: Bronze SHOULD include Steam Workshop content (UGC) via `IPublishedFileService/QueryFiles/v1` with configurable limits and stored as raw JSON.gz under `bronze/workshop/...` with manifests.
+
+#### Operability
+- FR-033: Long-running Bronze ingestion MUST support resume across process restarts via persistent run-state checkpoints keyed by runId; iteration order remains random-without-replacement for pending items.
+
+#### Data Ownership & Portability
+- FR-024: Canonical Source of Truth. The canonical store for Steam data MUST be the local filesystem data lake (Bronze/Silver/Gold + manifests). Any cloud database or index (e.g., Cosmos, vector stores) is derivative and MUST be reconstructable from the filesystem alone.
+- FR-025: Vendor-Neutral Backups. The system MUST support an optional S3-compatible backup target configured via environment/JSON options without code changes. Preferred primary is Cloudflare R2 (for $0 public egress and S3-compatibility), but any S3-compatible target (e.g., Backblaze B2, MinIO, AWS S3) is acceptable.
+- FR-026: Export/Import. The Worker CLI MUST expose portable export/import: “export pack” (create tar.zst archives per partition/run with manifest + checksums + license/provenance note) and “import unpack” (restore archives to the data lake layout) without network access.
+- FR-027: Egress-Aware Mirroring. Backups MUST be retrievable via standard tools (e.g., aws s3, rclone) and include byte-size/accounting in manifests to reason about egress/cost. Provide a simple “dry-run” report mode.
+- FR-028: Git Scope. The repository MUST exclude large artifacts from Git. Tiny, safe, curated samples MAY be tracked via Git LFS strictly for demos; production datasets MUST NOT rely on Git/LFS as a primary store.
+
 ### Key Entities (data-oriented)
 - Run: A single execution instance (ingestion or refinement) capturing timing, parameters, and outcomes.
 - Partition: A time-based or run-based subdivision of storage (used to organize raw and refined artifacts).

@@ -17,7 +17,7 @@ public class BronzeNewsIngestor
         _dataRoot = dataRoot;
     }
 
-    public async Task<int> IngestNewsAsync(int appId, string runId, DateTime today, int count = 20, string? tags = "patchnotes", CancellationToken ct = default)
+    public async Task<int> IngestNewsAsync(int appId, string runId, DateTime today, int count = 20, string? tags = null, CancellationToken ct = default)
     {
         var payload = await _steam.GetNewsForAppAsync(appId, count: count, tags: tags, ct: ct);
         if (payload?.appnews?.newsitems is null || payload.appnews.newsitems.Length == 0) return 0;

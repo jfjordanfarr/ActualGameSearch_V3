@@ -6,6 +6,7 @@ This feature primarily adds a background worker, not new HTTP endpoints. The con
 - executable: src/ActualGameSearch.Worker
 - verbs:
   - ingest: fetch catalog, store pages, news, and reviews respecting caps
+    - bronze: random-sampled Bronze ingestion with flags below
   - refine: transform Bronze → Silver
   - derive: compute candidate set (Gold)
 
@@ -17,8 +18,13 @@ This feature primarily adds a background worker, not new HTTP endpoints. The con
 - --recrawl-store=7d
 - --recrawl-news=7d
 - --reviews-cap-per-app=10
+  - for Bronze random run: default 50 (configurable)
 - --mode=[full|popular|mid|longtail]
- - --news-tags=patchnotes|all (default: all; when 'patchnotes', also compute PatchNotesRatio)
+- --news-tags=<tag>|all (default: all; pass a specific tag like 'patchnotes' to filter)
+- --news-count=10 (Bronze news items per app; default 10)
+- --sample=250 (Bronze app sample size)
+- --concurrency=4 (Bronze parallelism)
+- --resume=run-YYYYMMDD-HHMMSS (resume an existing Bronze run; uses runstate at bronze/runstate/{runId}.json)
  - --reviews-language=all --reviews-type=all --reviews-purchase=steam --reviews-per-page=100
  - --silver-min-unique-words=20 (applied in normalization, not Bronze capture)
  - --silver-exclude-free-received=true

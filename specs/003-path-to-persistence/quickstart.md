@@ -13,6 +13,12 @@ This guide explains how to run the ingestion/refinement pipeline locally after i
 4) Run refine to produce silver parquet
 5) Run derive to compute candidates
 
+### Non-trivial Bronze sample (random)
+- Run a larger Bronze ingestion (collect all news now; filter later in Silver):
+	- worker ingest bronze --sample=250 --reviews-cap-per-app=50 --news-tags=all --news-count=10 --concurrency=4
+- After completion, consider mirroring the lake to R2 (dry-run first):
+	- EPHEMERAL=1 DRY_RUN=1 ./AI-Agent-Workspace/Scripts/backup_rclone.example.sh
+
 ## Expected Layout
 See `contracts/worker-cli.md` for exact file paths and manifest locations.
 

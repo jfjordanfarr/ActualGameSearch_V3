@@ -39,6 +39,8 @@
 - [ ] T023 Add run summary artifacts (counts, avoided calls, errors, throughput) to `ManifestWriter` and write to `AI-Agent-Workspace/Artifacts/DataLake/reports/{date}/run-summary.json`.
 - [ ] T024 Document weekly recrawl and review delta strategy in `specs/003-path-to-persistence/quickstart.md` with example commands and expected outputs.
 - [ ] T025 Add compliance/TOS note and throttling guidance to `AI-Agent-Workspace/Docs/steam-compliance.md` (avoid PII, preserve links, max concurrency 4, caching intent).
+ - [x] T026 Add optional S3-compatible backup sync script (`AI-Agent-Workspace/Scripts/backup_rclone.example.sh`) and doc (`AI-Agent-Workspace/Docs/backups-and-egress.md`) covering R2/B2/S3/MinIO via rclone; include dry-run and size accounting examples. Default examples should use Cloudflare R2.
+ - [ ] T027 Implement Worker CLI verbs: `export pack` and `import unpack` to create/restore portable tar.zst archives per run/partition with manifest + checksums; store under `AI-Agent-Workspace/Artifacts/DataLake/exports/`. (Helper scaffold drafted; wiring and zstd selection pending.)
 
 ## Phase 3.5: Polish
 - [ ] T026 [P] Create exploratory notebook `AI-Agent-Workspace/Notebooks/DataLake_Exploration.ipynb` (Python + DuckDB) with cells for: review count distributions, recent activity histograms, patch cadence, and correlation sketch.

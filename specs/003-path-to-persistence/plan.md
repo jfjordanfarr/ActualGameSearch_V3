@@ -35,6 +35,8 @@ Goal: Capture Steam data once (Bronze), refine into clean, queryable datasets (S
 Approach: Implement a local-first medallion data lake under `AI-Agent-Workspace/Artifacts/DataLake` using gzip JSON for Bronze and Parquet (Snappy) + manifest for Silver/Gold. A .NET Worker orchestrates ingestion with strict concurrency (max 4), exponential backoff, resumable checkpoints, and configurable cadences (weekly store/news; delta reviews). Reviews are stored with full text in Bronze but capped per app (default 10). Silver annotates content types (games/DLC/demos/workshop), normalizes fields, and deduplicates; Gold emits a candidate list with metrics and citations to raw evidence.
 Additionally, Silver introduces `NewsItemRefined` with sanitized `bodyClean` and `isPatchNotes`, and `RefinedGame` accumulates derived metrics (patchNotesRatio, devResponseRate, avgDevResponseTimeHours, reviewUpdateVelocity, ugcMetrics?).
 
+Data ownership posture: The filesystem data lake is the canonical source of truth. Cloud databases/indices are derivatives and MUST be reconstructable from local artifacts. Provide optional S3-compatible mirroring (R2/B2/S3/MinIO) and offline export/import archives to avoid provider lock-in. Prefer Cloudflare R2 as the primary remote lake due to $0 public egress and S3 compatibility; Azure Cosmos remains the serving layer for Gold.
+
 SteamSeeker 2023 infusions (evidence-based metrics and workflow):
 - Multilingual-safe text cleaning for reviews/store text (strip HTML/BBCode/links/newlines; avoid alpha-only filters to preserve non-Latin scripts).
 - Review-level filters (applied at Silver during normalization, not at Bronze acquisition):
@@ -114,6 +116,7 @@ Output: research.md created with decisions, rationale, alternatives.
 Design outputs created:
 1) data-model.md: Entities and schemas (Run, RawArtifact, Review, StorePage, NewsItem, RefinedGame, Candidate, Manifests) with key fields and relationships.
 2) contracts/: No new public HTTP endpoints in this feature. Added worker CLI contract and file layout contract documentation.
+   - Include CLI verbs for `export pack` and `import unpack` (portable tar.zst archives per run/partition with manifest + checksums + license/provenance note).
 3) quickstart.md: How to run the worker locally (post-implementation), directory layout, and smoke checks.
 4) Agent context: Will be updated via `.specify/scripts/bash/update-agent-context.sh copilot`.
 
