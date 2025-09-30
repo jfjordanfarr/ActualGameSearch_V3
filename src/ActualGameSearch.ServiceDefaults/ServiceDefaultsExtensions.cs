@@ -90,11 +90,17 @@ public static class ServiceDefaultsExtensions
         builder.Services.AddHttpClient();
         builder.Services.ConfigureHttpClientDefaults(http =>
         {
+            // Note: We keep a conservative but non-aggressive global policy because named clients
+            // (e.g., "steam", "ollama") also add their own handlers. If the global attempt timeout is
+            // too short, it can trigger cancellations before the named pipeline completes long-running work.
             http.AddStandardResilienceHandler(options =>
             {
                 options.Retry.MaxRetryAttempts = 5;
-                options.TotalRequestTimeout.Timeout = TimeSpan.FromSeconds(30);
-                options.AttemptTimeout.Timeout = TimeSpan.FromSeconds(10);
+                // Allow long-running requests to complete when needed (named clients can still be stricter)
+                options.TotalRequestTimeout.Timeout = TimeSpan.FromMinutes(5);
+                options.AttemptTimeout.Timeout = TimeSpan.FromSeconds(90);
+                // Circuit breaker sampling must be at least 2x attempt timeout (90s * 2 = 180s minimum)
+                options.CircuitBreaker.SamplingDuration = TimeSpan.FromMinutes(4);
                 // Default transient predicates include 5xx/408/timeout and honor Retry-After on 429/503.
             });
         });
@@ -151,6 +157,34 @@ public static class ServiceDefaultsExtensions
                 options.CircuitBreaker.SamplingDuration = TimeSpan.FromMinutes(2);
                 options.CircuitBreaker.MinimumThroughput = 20;
                 options.CircuitBreaker.FailureRatio = 0.15;
+            });
+
+        // Named client for Ollama embeddings with generous timeouts (avoid premature 10s attempt timeouts)
+        builder.Services
+            .AddHttpClient("ollama", client =>
+            {
+                client.DefaultRequestHeaders.UserAgent.ParseAdd("ActualGameSearch/1.0 (+https://actualgamesearch.com)");
+                client.DefaultRequestHeaders.Accept.ParseAdd("application/json");
+            })
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            {
+                AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
+                MaxConnectionsPerServer = 2,
+                PooledConnectionIdleTimeout = TimeSpan.FromMinutes(10),
+            })
+            .AddStandardResilienceHandler(options =>
+            {
+                // Embedding requests can take time; increase attempt + total timeout
+                options.TotalRequestTimeout.Timeout = TimeSpan.FromMinutes(5);
+                options.AttemptTimeout.Timeout = TimeSpan.FromSeconds(90);
+                options.Retry.MaxRetryAttempts = 3;
+                options.Retry.BackoffType = DelayBackoffType.Exponential;
+                options.Retry.Delay = TimeSpan.FromSeconds(2);
+                options.Retry.UseJitter = true;
+                // Validation requires SamplingDuration >= 2x AttemptTimeout (>= 180s for 90s attempt)
+                options.CircuitBreaker.SamplingDuration = TimeSpan.FromMinutes(4);
+                options.CircuitBreaker.MinimumThroughput = 10;
+                options.CircuitBreaker.FailureRatio = 0.25;
             });
 
         return builder;

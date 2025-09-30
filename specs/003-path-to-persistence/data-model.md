@@ -42,6 +42,7 @@ Date: 2025-09-25
 - languages: string[] (raw)
 - type: string (game, dlc, demo, soundtrack, tool, workshop)
 - sourceUrl: string
+- recommendations: { total: int, positive: int, negative: int } (enables Bronze candidacy evaluation)
 
 ### NewsItem (Bronze)
 - appId: int
@@ -57,6 +58,7 @@ Date: 2025-09-25
 - title: string
 - timestamp: date (UTC)
 - bodyClean: string (sanitized from HTML/BBCode)
+- newsClass: enum [patch_update, marketing_other] (initial coarse taxonomy via discovery census of tags/body features; may evolve)
 - isPatchNotes: bool (via tags=patchnotes or classifier)
 
 ### RefinedGame (Silver)
@@ -68,6 +70,8 @@ Date: 2025-09-25
 - platforms: enum[] [win, mac, linux]
 - languages: string[] (normalized ISO codes)
 - type: enum [game, dlc, demo, soundtrack, tool, workshop]
+- parentGameId: int|null (for DLC/demos linking to base game)
+- gameClusterId: int|null (for grouping up to 100 related appids per true game)
 - reviewCounts: { total, recentWindow }
 - reviewStats: { upRatio, helpfulRate }
 - dupGroupId: string|null (potential duplicates grouping)
@@ -108,12 +112,22 @@ Date: 2025-09-25
 - files: { path, rows, bytes, checksum }[]
 - lineage: { sources: string[], transforms: string[] }
 
+### PolicyMetadata (attached to Run summary and Manifest)
+- policy_version: string (semver)
+- thresholds: { recommendations_min: int, review_count_min: int }
+- fallback_reason: enum [review_count_fallback, none]
+- effective_values: { recommendations_min: int, review_count_min: int } (after overrides)
+- sample_counts: { total_apps: int, included_by_recommendations: int, included_by_fallback: int, excluded_missing: int }
+- notes?: string
+
 ## Relationships
 - Run 1-* RawArtifact
 - RawArtifact -> RefinedGame (via transforms)
 - RefinedGame -> Candidate (policy evaluation)
 
 ## Validation Rules
+- Bronze candidacy requires ≥10 total recommendations (positive + negative combined) as determined from store page metadata.
 - Bronze review cap per app enforced at write time (default 10).
+- Game clusters limited to 100 appids per true game (1 base game + up to 99 DLC/demos/soundtracks).
 - No PII stored in Review objects (user fields stripped).
 - Timestamps normalized to UTC in Silver.

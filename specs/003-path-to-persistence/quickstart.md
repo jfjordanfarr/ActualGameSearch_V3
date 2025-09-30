@@ -16,6 +16,7 @@ This guide explains how to run the ingestion/refinement pipeline locally after i
 ### Non-trivial Bronze sample (random)
 - Run a larger Bronze ingestion (collect all news now; filter later in Silver):
 	- worker ingest bronze --sample=250 --reviews-cap-per-app=50 --news-tags=all --news-count=10 --concurrency=4
+	- Note: Only games with ≥10 total recommendations (from store metadata) will be included in Bronze to enable efficient embed-then-ingest workflow
 - After completion, consider mirroring the lake to R2 (dry-run first):
 	- EPHEMERAL=1 DRY_RUN=1 ./AI-Agent-Workspace/Scripts/backup_rclone.example.sh
 
@@ -26,3 +27,6 @@ See `contracts/worker-cli.md` for exact file paths and manifest locations.
 - Verify manifests exist and list files with nonzero row counts
 - Ensure review JSON includes full text and that per-app review count ≤ cap
 - Confirm silver parquet files can be read by DuckDB
+	- bronze/steam-catalog/{date}/apps.json.gz when `--catalog` is used
+
+	- run-summary should include a `policy` block with policy_version, thresholds, fallback_reason, and sample_counts

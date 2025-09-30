@@ -17,6 +17,12 @@
 - Favor durable fixes; avoid band-aids without a removal plan.
 - Use notebooks under `AI-Agent-Workspace/Notebooks/` for data exploration and short analyses.
 - Stay oriented: run `AI-Agent-Workspace/Scripts/tree_gitignore.py` when disoriented; prefer concrete file paths over guesses.
+- **Check if we have already solved a problem before**: all development history is inside the `./AI-Agent-Workspace/Background/ConversationHistory/` folder. Use `rg` to search for keywords and find relevant `SUMMARIZED_*.md` files. Open the latest summary first, then follow links to the raw conversation for context.
+
+Here's a quick shell one-liner to find all the summaries:
+```bash
+find /workspaces/ActualGameSearch_V3/AI-Agent-Workspace/Background/ConversationHistory -path "*/Summarized/SUMMARIZED_*.md" -type f | sort -t/ -k6 -V | awk -F/ '{spec=$(NF-2); file=$(NF); gsub(/SUMMARIZED_|\.md/, "", file); printf "%-25s %s\n", spec":", file}'
+```
 
 ## Workspace Orientation (minimap)
 - API: `src/ActualGameSearch.Api/Program.cs`
@@ -27,6 +33,7 @@
 - Specs: `specs/002-we-intend-to/` and `specs/003-path-to-persistence/`
 - Tests: `tests/*`
 - Provenance corpus: `AI-Agent-Workspace/Background/ConversationHistory/**/Summarized/SUMMARIZED_*.md` (link out to Raw from these)
+- **Ollama 8K Context**: [DEFINITIVE SOLUTION](../AI-Agent-Workspace/Docs/ollama-8k-context-solution.md) - Never lose this again!
 
 ## Minimal Provenance & Verification
 - Prefer raw-before-derived for rehydration: open the latest SUMMARIZED file, then jump to the linked Raw file to anchor.
@@ -37,7 +44,9 @@
 - This file is about Copilot’s posture and guardrails. Keep process specifics (spec/plan/tasks prompts) in spec-kit prompts/templates.
 - Treat `.specify/*` as the source of truth for spec-kit flows. Don’t restate them here.
 
-## Example actions (trimmed)
-- Create/update a focused doc or notebook under `AI-Agent-Workspace/Docs/` when you discover something non-trivial.
-- Add a minimal test before changing public behavior; keep tests green.
-- When lost on files/APIs, grep or open Program.cs/README/specs first; avoid hallucinating paths and names.
+## C# Coding Conventions
+
+- Optimize for human readability first and foremost (use the full expressiveness of spacing in the ways that veteran SQL and Powershell developers do).
+- Try to avoid magic strings; compartmentalize them in appropriate configurations/constants while accepting some practical exceptions. 
+- Be a showcase of the very best practices of modern C#, .NET 8+, and .NET Aspire
+- (**Unique guideline for agentic development**) When a file gets longer than 500 lines, refactor. Edit tools become unreliable at longer file lengths.

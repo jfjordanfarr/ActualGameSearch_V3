@@ -39,11 +39,21 @@
 ## Clarifications
 
 ### Session 2025-09-25
-- Q: What qualifies for Bronze inclusion and how should reviews be captured? → A: Include any app with at least one published review; capture full review payloads in Bronze while capping stored reviews per app to a small configurable maximum (default 10) to control local storage.
+- Q: What qualifies for Bronze inclusion and how should reviews be captured? → A: Include any app with at least a configurable minimum number of recommendations (default 10); capture full review payloads in Bronze while capping stored reviews per app to a small configurable maximum (default 10) to control local storage.
 - Q: Should non-game content (DLC, demos, soundtracks, tools, workshop) be excluded? → A: Do not exclude by type at Bronze if reviewed; capture all reviewed appids and classify/annotate content type during Silver to allow inclusion (e.g., DLC, workshop) in downstream relevance and recommendations.
 - Q: What concurrency and iteration strategy should ingestion follow? → A: Strict cap of max 4 parallel outbound requests with backoff; prefer random-without-replacement iteration over large appid sets; runs must be resumable from last success checkpoints.
 - Q: What are the default recrawl cadences? → A: Weekly recrawl of store pages and news/patch notes; reviews fetched as deltas by page/cursor policy; all cadences are configurable.
 - Q: What storage layout and formats should be used locally? → A: Data lake root under `AI-Agent-Workspace/Artifacts/DataLake` with Bronze JSON (gzip) and Silver/Gold Parquet (Snappy) plus a manifest; aim for an Iceberg-compatible path in the future but do not mandate it now.
+
+### Session 2025-09-29
+- Q: When recommendations.total is missing or inconsistent for an app, what is the Bronze inclusion fallback policy? → A: B (Fall back to review_count ≥ configurable minimum, e.g., 10).
+
+### Session 2025-09-29 (continued)
+- Q: AppID enumeration source and scope for the storewide catalog pass? → A: Use the official Steam app list endpoint to enumerate all appids (storewide). No exclusions at Bronze; exclusions/classification are deferred to Silver.
+- Q: What fields should the run metadata include to capture policy and fallbacks? → A: Adopt a minimal schema: `policy_version` (string/semver), `thresholds` { `recommendations_min`, `review_count_min` }, `fallback_reason` ∈ { `review_count_fallback`, `none` }, `effective_values` (resolved thresholds after overrides), and `sample_counts` { `total_apps`, `included_by_recommendations`, `included_by_fallback`, `excluded_missing` }. Notes: extendable; MUST be written to both manifest and run summary.
+- Q: When should tiered review extension occur? → A: Default at Silver. Silver may trigger targeted review deltas to extend specific appids up to a higher cap for analysis; Gold MAY also extend if needed. Avoid re-fetching already captured pages.
+- Q: News classification detail? → A: Do not filter at Bronze. Silver SHOULD begin with a discovery census of tags and body features; start coarse (patch/update vs marketing/other) and evolve taxonomy as evidence accumulates.
+- Q: “True game” grouping rule for “up to 99 associated appids”? → A: Unknown—treat as a Silver research task. Probe `appdetails` fields (e.g., `fullgame`, `dlc`, `type`, `package_groups`) and emit annotations and a report; do not enforce grouping beyond annotation initially.
 
 ## User Scenarios & Testing (mandatory)
 
@@ -86,28 +96,30 @@ As the project maintainer, I want to capture Steam game data once and retain the
 - FR-015: The system MUST provide guardrails to prevent accidental deletion of raw evidence when clearing refined/candidate outputs.
 - FR-016: The system SHOULD provide convenience notebooks and/or reports enabling empirical threshold discovery over refined datasets (distributions, correlations, outlier detection) without mandating a specific analytics engine.
 - FR-017: The system SHOULD provide test fixtures and small public sample slices to allow CI validation without bundling large datasets.
- - FR-018: Bronze inclusion MUST include any appid with at least one published review; do not exclude DLC/demos/workshop at Bronze—content types are annotated in Silver for downstream filtering and recommendations.
+ - FR-028: Bronze candidacy MUST be determined by Steam store metadata recommendations.total field; minimum threshold is configurable (default 10) to balance dataset breadth with quality signal.
+ - FR-028F: If recommendations.total is missing or clearly inconsistent, Bronze candidacy MUST fall back to review_count ≥ a configurable minimum (default 10). This fallback is explicit (no silent behavior) and SHALL be reflected in run metadata for auditability.
  - FR-019: Bronze reviews MUST capture full review payloads; a configurable limit (default 10) caps the number of stored review documents per app to control local storage footprint.
  - FR-020: Ingestion MUST enforce a hard cap of 4 concurrent outbound requests with exponential backoff, random-without-replacement iteration over appids, and resumable checkpoints.
  - FR-021: Default recrawl cadences MUST be weekly for store pages and news/patch notes and delta-based for reviews (by page/cursor); cadences must be configurable.
  - FR-022: The local data lake root MUST be `AI-Agent-Workspace/Artifacts/DataLake`; Bronze stored as gzip-compressed JSON; Silver/Gold stored as Parquet with Snappy compression and an accompanying manifest; an Iceberg-compatible path is a future objective but not a hard requirement.
- - FR-023: The system MUST support tiered review capture: Bronze uses a small per-app cap by default for breadth, and Gold derivation MUST be able to trigger targeted review deltas to extend specific appids up to a higher cap before computing metrics/embeddings, without re-fetching already captured pages.
+ - FR-023: The system MUST support tiered review capture: Bronze uses a small per-app cap by default for breadth. Silver MUST be able to trigger targeted review deltas to extend specific appids up to a higher cap for analysis (default behavior). Gold MAY also extend if needed before computing metrics/embeddings. Implement without re-fetching already captured pages.
 
 #### Scale Targets and Content Scope (Bronze→Gold)
-- FR-029: Bronze/Silver scale targets per game SHOULD allow up to 2,000 reviews, 2,000 news items, and 2,000 workshop items captured, subject to practical API/page-size limits and runtime budgets; actual caps are configurable per run.
+- FR-029: Bronze/Silver scale targets per true **game** SHOULD allow up to 2,000 reviews, 200 news items, and 200 workshop items captured; for each true game, capture up to 99 additional associated appids (DLC, demos, soundtracks, etc.) allowing each game to occupy up to 100 records in the games collection; actual caps are configurable per run.
 - FR-030: Gold selection per game SHOULD target up to 200 reviews, 200 news items, and 200 workshop items, chosen by rank combining semantic richness (unique token count), community helpfulness, hours played (when available), and recency.
-- FR-031: Bronze news capture MUST NOT exclude by tag by default; tag filters (e.g., patchnotes) are optional flags. Silver MUST classify news into patch/update vs. marketing/other for downstream filtering.
+ - FR-031: Bronze news capture MUST NOT exclude by tag by default; tag filters (e.g., patchnotes) are optional flags. Silver MUST perform a discovery census of tags/body features and classify news into at least patch/update vs. marketing/other for downstream filtering; taxonomy may evolve based on observed distributions.
 - FR-032: Bronze SHOULD include Steam Workshop content (UGC) via `IPublishedFileService/QueryFiles/v1` with configurable limits and stored as raw JSON.gz under `bronze/workshop/...` with manifests.
 
 #### Operability
 - FR-033: Long-running Bronze ingestion MUST support resume across process restarts via persistent run-state checkpoints keyed by runId; iteration order remains random-without-replacement for pending items.
+- FR-034: Game description embeddings SHOULD be computed during Bronze ingestion only for apps meeting a configurable recommendation threshold (default 20) to optimize compute efficiency while focusing on likely Gold candidates.
 
 #### Data Ownership & Portability
 - FR-024: Canonical Source of Truth. The canonical store for Steam data MUST be the local filesystem data lake (Bronze/Silver/Gold + manifests). Any cloud database or index (e.g., Cosmos, vector stores) is derivative and MUST be reconstructable from the filesystem alone.
 - FR-025: Vendor-Neutral Backups. The system MUST support an optional S3-compatible backup target configured via environment/JSON options without code changes. Preferred primary is Cloudflare R2 (for $0 public egress and S3-compatibility), but any S3-compatible target (e.g., Backblaze B2, MinIO, AWS S3) is acceptable.
 - FR-026: Export/Import. The Worker CLI MUST expose portable export/import: “export pack” (create tar.zst archives per partition/run with manifest + checksums + license/provenance note) and “import unpack” (restore archives to the data lake layout) without network access.
 - FR-027: Egress-Aware Mirroring. Backups MUST be retrievable via standard tools (e.g., aws s3, rclone) and include byte-size/accounting in manifests to reason about egress/cost. Provide a simple “dry-run” report mode.
-- FR-028: Git Scope. The repository MUST exclude large artifacts from Git. Tiny, safe, curated samples MAY be tracked via Git LFS strictly for demos; production datasets MUST NOT rely on Git/LFS as a primary store.
+ - FR-035: Git Scope. The repository MUST exclude large artifacts from Git. Tiny, safe, curated samples MAY be tracked via Git LFS strictly for demos; production datasets MUST NOT rely on Git/LFS as a primary store.
 
 ### Key Entities (data-oriented)
 - Run: A single execution instance (ingestion or refinement) capturing timing, parameters, and outcomes.

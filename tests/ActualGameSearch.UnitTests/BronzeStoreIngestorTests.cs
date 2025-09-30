@@ -6,6 +6,8 @@ using System.Threading.Tasks;
 using ActualGameSearch.Worker.Ingestion;
 using ActualGameSearch.Worker.Models;
 using ActualGameSearch.Worker.Services;
+using ActualGameSearch.Worker.Configuration;
+using Microsoft.Extensions.Options;
 using Xunit;
 
 namespace ActualGameSearch.UnitTests;
@@ -36,7 +38,14 @@ public class BronzeStoreIngestorTests
     {
         var tmp = Path.Combine(Path.GetTempPath(), "agsv3-bronze-store-" + System.Guid.NewGuid().ToString("N"));
         var steam = new FakeSteam();
-        var ingestor = new BronzeStoreIngestor(steam, tmp);
+        var mockCandidacyOptions = Options.Create(new CandidacyOptions
+        {
+            MinRecommendationsForInclusion = 10,
+            MinReviewsForEmbedding = 100,
+            MaxAssociatedAppIds = 1000
+        });
+
+        var ingestor = new BronzeStoreIngestor(steam, tmp, mockCandidacyOptions);
         var today = new System.DateTime(2025, 9, 25);
         var runId = "run-store-1";
 

@@ -8,11 +8,13 @@ using System.Diagnostics.Metrics;
 using ActualGameSearch.Worker.Embeddings;
 using ActualGameSearch.Worker.Models;
 using ActualGameSearch.Worker.Probes;
+using ActualGameSearch.Worker.Configuration;
 using Microsoft.Azure.Cosmos;
 using ActualGameSearch.ServiceDefaults;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
 using ActualGameSearch.Core.Services;
 using ActualGameSearch.Worker.Services;
 using ActualGameSearch.Worker.Ingestion;
@@ -22,10 +24,85 @@ namespace ActualGameSearch.Worker;
 
 internal class Program
 {
+	private static async Task<int?> GetActualOllamaContextAsync(HttpClient http, string ollamaEndpoint, string model)
+	{
+		try
+		{
+			var showUrl = new Uri(new Uri(ollamaEndpoint), "api/show");
+			var payload = System.Text.Json.JsonSerializer.Serialize(new { name = model });
+			using var req = new HttpRequestMessage(HttpMethod.Post, showUrl)
+			{
+				Content = new StringContent(payload, Encoding.UTF8, "application/json")
+			};
+			using var resp = await http.SendAsync(req);
+			if (!resp.IsSuccessStatusCode) return null;
+			
+			var jsonStr = await resp.Content.ReadAsStringAsync();
+			using var doc = System.Text.Json.JsonDocument.Parse(jsonStr);
+			
+			// First check the actual runtime parameters (what Ollama is using)
+			if (doc.RootElement.TryGetProperty("parameters", out var parameters) && 
+				parameters.ValueKind == System.Text.Json.JsonValueKind.String)
+			{
+				var paramStr = parameters.GetString();
+				if (!string.IsNullOrEmpty(paramStr))
+				{
+					// Look for "num_ctx XXXX" in parameter string
+					var match = System.Text.RegularExpressions.Regex.Match(paramStr, @"num_ctx\s+(\d+)");
+					if (match.Success && int.TryParse(match.Groups[1].Value, out var numCtx))
+					{
+						return numCtx;
+					}
+				}
+			}
+			
+			// Fallback: check model_info for base model limitations (this is often hardcoded to 2048)
+			if (doc.RootElement.TryGetProperty("model_info", out var modelInfo))
+			{
+				// Look for the actual model context limitation
+				if (modelInfo.TryGetProperty("nomic-bert.context_length", out var contextProp) && 
+					contextProp.TryGetInt32(out var actualContext))
+				{
+					return actualContext;
+				}
+				
+				// Try other potential context fields as fallbacks
+				var contextFields = new[] { "context_length", "n_ctx_train", "context_size", "max_context" };
+				foreach (var field in contextFields)
+				{
+					if (modelInfo.TryGetProperty(field, out var prop) && prop.TryGetInt32(out var context))
+						return context;
+				}
+			}
+			
+			return null;
+		}
+		catch 
+		{
+			return null;
+		}
+	}
+
 	public static async Task Main(string[] args)
 	{
 	var builder = Host.CreateApplicationBuilder(args);
 	builder.AddServiceDefaults();
+
+	// Make configuration resilient to being run from the solution root by also loading
+	// appsettings files from the output base directory (copied via csproj).
+	var envName = builder.Environment.EnvironmentName ?? "Production";
+	try
+	{
+		var baseDir = AppContext.BaseDirectory;
+		var appsettingsPath = Path.Combine(baseDir, "appsettings.json");
+		var envAppsettingsPath = Path.Combine(baseDir, $"appsettings.{envName}.json");
+		builder.Configuration.AddJsonFile(appsettingsPath, optional: true, reloadOnChange: true);
+		builder.Configuration.AddJsonFile(envAppsettingsPath, optional: true, reloadOnChange: true);
+		// Re-apply environment variables and CLI so they override these late-added JSON files
+		builder.Configuration.AddEnvironmentVariables();
+		builder.Configuration.AddCommandLine(args);
+	}
+	catch { /* non-fatal */ }
 
 	// Register Steam client for DI
 	builder.Services.AddSingleton<ISteamClient, SteamHttpClient>();
@@ -46,13 +123,33 @@ internal class Program
 	var distance = (builder.Configuration["Cosmos:Vector:DistanceFunction"] ?? "cosine").ToLowerInvariant();
 	var indexType = (builder.Configuration["Cosmos:Vector:IndexType"] ?? "diskann").ToLowerInvariant();
 	var formPref = CosmosVectorQueryHelper.ParsePreference(builder.Configuration["Cosmos:Vector:DistanceForm"]);
+
+	// Lightweight CLI overrides for Ollama without AppHost (e.g., --ollama-endpoint=..., --ollama-model=..., --emb-num-ctx=8192)
+	foreach (var a in args)
+	{
+		if (a.StartsWith("--ollama-endpoint="))
+			ollamaEndpoint = a.Substring("--ollama-endpoint=".Length);
+		else if (a.StartsWith("--ollama-model="))
+			ollamaModel = a.Substring("--ollama-model=".Length);
+		else if (a.StartsWith("--emb-num-ctx=") && int.TryParse(a.Substring("--emb-num-ctx=".Length), out var cliNumCtx))
+			builder.Configuration["Embeddings:NumCtx"] = cliNumCtx.ToString();
+	}
 	var maxReviewsPerGame = int.TryParse(builder.Configuration["Seeding:MaxReviewsPerGame"], out var mrg) ? mrg : 200;
 	var failOnNoReviews = builder.Configuration.GetValue<bool>("Seeding:FailOnNoReviews", true);
+	
+	// Candidacy configuration for Bronze tier
+	var candidacyOptions = Microsoft.Extensions.Options.Options.Create(new CandidacyOptions 
+	{
+		MinRecommendationsForInclusion = builder.Configuration.GetValue<int>("Candidacy:Bronze:MinRecommendationsForInclusion", 10),
+		MinReviewsForEmbedding = builder.Configuration.GetValue<int>("Candidacy:Bronze:MinReviewsForEmbedding", 20),
+		MaxAssociatedAppIds = builder.Configuration.GetValue<int>("Candidacy:Bronze:MaxAssociatedAppIds", 99)
+	});
 	var minReviewCount = int.TryParse(builder.Configuration["Seeding:MinReviewCount"], out var mrc) ? mrc : 10; // legacy, superseded by MinQualifiedReviews
 	var minQualifiedReviews = int.TryParse(builder.Configuration["Seeding:MinQualifiedReviews"], out var mqr) ? mqr : 5;
 	var minUniqueWordsPerReview = int.TryParse(builder.Configuration["Seeding:MinUniqueWordsPerReview"], out var muw) ? muw : 20;
 	var requireSteamPurchase = builder.Configuration.GetValue<bool>("Seeding:RequireSteamPurchase", true);
 	var allowDeterministicFallback = builder.Configuration.GetValue<bool>("Embeddings:AllowDeterministicFallback", false);
+	var allowChunking = builder.Configuration.GetValue<bool>("Embeddings:AllowChunking", false);
 	var embNumCtx = int.TryParse(builder.Configuration["Embeddings:NumCtx"], out var nc) ? nc : 2048;
 	var embMaxBatch = int.TryParse(builder.Configuration["Embeddings:MaxBatch"], out var mb) ? mb : 64;
 	var embHttpTimeoutSeconds = int.TryParse(builder.Configuration["Embeddings:HttpTimeoutSeconds"], out var ts) ? ts : 180;
@@ -60,6 +157,7 @@ internal class Program
 	var samplingCount = int.TryParse(builder.Configuration["Sampling:Count"], out var sc) ? sc : 50;
 	var patchIngestEnabled = builder.Configuration.GetValue<bool>("PatchNotes:Enabled", true);
 	var maxPatchNotesPerGame = int.TryParse(builder.Configuration["PatchNotes:MaxPerGame"], out var mpn) ? mpn : 10;
+	var requireCosmos = builder.Configuration.GetValue<bool>("Ingestion:RequireCosmos", true);
 
 	// Services
 	builder.Services.AddHttpClient();
@@ -68,10 +166,18 @@ internal class Program
 
 		// Delay Cosmos client creation to runtime; we'll try to connect and otherwise fall back to writing JSON artifacts.
 
+		// If a Cosmos connection string is provided, register a CosmosClient for downstream use
+		if (!string.IsNullOrWhiteSpace(cosmosConn))
+		{
+			builder.Services.AddSingleton(new Microsoft.Azure.Cosmos.CosmosClient(cosmosConn));
+		}
+
 		using var host = builder.Build();
 
-	var http = host.Services.GetRequiredService<IHttpClientFactory>().CreateClient();
+	// Use a named client tuned for long-running embedding calls
+	var http = host.Services.GetRequiredService<IHttpClientFactory>().CreateClient("ollama");
 	var steamHttp = host.Services.GetRequiredService<IHttpClientFactory>().CreateClient("steam");
+		// Safety: still clamp timeout based on configuration in case a host doesn't apply our ServiceDefaults
 		http.Timeout = TimeSpan.FromSeconds(Math.Clamp(embHttpTimeoutSeconds, 30, 600));
 		// Set a friendly User-Agent and Accept to avoid being blocked or served atypical responses
 		try
@@ -81,19 +187,111 @@ internal class Program
 		}
 		catch { /* headers may be set already in some hosts */ }
 
-		// Attempt to pre-pull the embedding model in the Ollama container (best-effort)
+		// Ensure the embedding model exists in the Ollama container (best-effort)
 		try
 		{
-				var pullUrl = new Uri(new Uri(ollamaEndpoint), "api/pull");
-			var body = System.Text.Json.JsonSerializer.Serialize(new { name = ollamaModel });
-			using var req = new HttpRequestMessage(HttpMethod.Post, pullUrl)
+			var baseUri = new Uri(ollamaEndpoint);
+			// 1) Check if model is present
+			var showUrl = new Uri(baseUri, "api/show");
+			using (var showReq = new HttpRequestMessage(HttpMethod.Post, showUrl))
 			{
-				Content = new StringContent(body, Encoding.UTF8, "application/json")
-			};
-			using var resp = await http.SendAsync(req);
-			// ignore status; container may already have the model
+				var showBody = System.Text.Json.JsonSerializer.Serialize(new { name = ollamaModel });
+				showReq.Content = new StringContent(showBody, Encoding.UTF8, "application/json");
+				using var showResp = await http.SendAsync(showReq);
+				Console.WriteLine($"Ollama /api/show for '{ollamaModel}' -> {(int)showResp.StatusCode} {showResp.StatusCode}");
+				if (showResp.IsSuccessStatusCode)
+				{
+					// Model already available
+					goto AfterModelEnsure;
+				}
+			}
+
+			// 2) First ensure base model exists (needed for FROM clause)
+			var basePullUrl = new Uri(baseUri, "api/pull");
+			using (var basePullReq = new HttpRequestMessage(HttpMethod.Post, basePullUrl))
+			{
+				// Pin to a specific, known-good tag for reproducibility
+				var basePullBody = System.Text.Json.JsonSerializer.Serialize(new { name = "nomic-embed-text:v1.5" });
+				basePullReq.Content = new StringContent(basePullBody, Encoding.UTF8, "application/json");
+				Console.WriteLine("Ollama /api/pull base 'nomic-embed-text:v1.5'...");
+				using var basePullResp = await http.SendAsync(basePullReq);
+				Console.WriteLine($"Ollama /api/pull -> {(int)basePullResp.StatusCode} {basePullResp.StatusCode}");
+				// Continue regardless of success; create may still work
+			}
+
+			// 3) Create model via /api/create using inline Modelfile based on nomic-embed-text with desired context
+			// Create from explicit v1.5 tag to avoid any retag drift
+			var modelfile = $"FROM nomic-embed-text:v1.5\nPARAMETER num_ctx {embNumCtx}\n";
+			var createUrl = new Uri(baseUri, "api/create");
+			using (var createReq = new HttpRequestMessage(HttpMethod.Post, createUrl))
+			{
+				var createBody = System.Text.Json.JsonSerializer.Serialize(new { name = ollamaModel, modelfile });
+				createReq.Content = new StringContent(createBody, Encoding.UTF8, "application/json");
+				Console.WriteLine($"Ollama /api/create '{ollamaModel}' (num_ctx={embNumCtx})...");
+				using var createResp = await http.SendAsync(createReq);
+				Console.WriteLine($"Ollama /api/create -> {(int)createResp.StatusCode} {createResp.StatusCode}");
+				// Best-effort: ignore non-success here; subsequent embedding calls will surface issues
+			}
+
+			// Give Ollama a brief moment to register the newly created model before probing
+			await Task.Delay(TimeSpan.FromSeconds(1));
+
+			AfterModelEnsure: ;
 		}
 		catch { /* ignore */ }
+
+		// Proactive readiness check: avoid hammering Steam if embeddings are not actually available yet
+		{
+			Exception? last = null;
+			// Log Ollama server version for debugging environment parity
+			try
+			{
+				var verUrl = new Uri(new Uri(ollamaEndpoint), "api/version");
+				using var verResp = await http.GetAsync(verUrl);
+				if (verResp.IsSuccessStatusCode)
+				{
+					var ver = await verResp.Content.ReadAsStringAsync();
+					Console.WriteLine($"Ollama server version: {ver}");
+				}
+			}
+			catch { /* non-fatal */ }
+			for (int attempt = 1; attempt <= 4; attempt++)
+			{
+				try
+				{
+					var health = await EmbeddingUtils.GenerateVectorsAsync(http, ollamaEndpoint, ollamaModel, new List<string> { "healthcheck" }, dims, allowDeterministicFallback: false, numCtx: embNumCtx, maxBatch: 1, allowChunking: allowChunking);
+					var hdim = health.FirstOrDefault()?.Length ?? 0;
+					Console.WriteLine($"Ollama embedding health OK (dims={hdim}, model='{ollamaModel}', num_ctx={embNumCtx}) on attempt {attempt}.");
+					
+					// Validate actual context vs requested context to prevent silent semantic truncation
+					var actualContext = await GetActualOllamaContextAsync(http, ollamaEndpoint, ollamaModel);
+					Console.WriteLine($"DEBUG: actualContext={actualContext}, embNumCtx={embNumCtx}");
+					if (actualContext.HasValue && actualContext.Value < embNumCtx)
+					{
+						Console.Error.WriteLine($"CONTEXT VALIDATION FAILED: Ollama model '{ollamaModel}' is using {actualContext.Value} context but {embNumCtx} was requested.");
+						Console.Error.WriteLine($"This would silently truncate ~{100 * (embNumCtx - actualContext.Value) / embNumCtx:F0}% of semantic meaning in embeddings.");
+						Console.Error.WriteLine($"Either fix the model context or reduce Embeddings:NumCtx to {actualContext.Value} to acknowledge the limitation.");
+						Console.Error.WriteLine($"Aborting to prevent corrupted embeddings.");
+						return;
+					}
+					
+					Console.WriteLine($"Context validation passed. Proceeding with ingestion.");
+					last = null;
+					break;
+				}
+				catch (Exception ex)
+				{
+					last = ex;
+					Console.Error.WriteLine($"Ollama embedding health check attempt {attempt} failed: {ex.Message}");
+					if (attempt < 4) await Task.Delay(TimeSpan.FromSeconds(2 * attempt));
+				}
+			}
+			if (last is not null)
+			{
+				Console.Error.WriteLine($"Ollama embedding health check failed after retries. Aborting ingestion to avoid unnecessary Steam API traffic.\nEndpoint={ollamaEndpoint}, Model={ollamaModel}, NumCtx={embNumCtx}\nLast error: {last.Message}");
+				return; // Do not proceed if embeddings are unavailable
+			}
+		}
 	// embedding via local function using Ollama HTTP when available
 		CosmosClient? cosmos = null;
 		try { cosmos = host.Services.GetService<CosmosClient>(); }
@@ -160,6 +358,13 @@ internal class Program
 				// Give up and fall back to artifacts
 				cosmos = null;
 			}
+		}
+
+		// If Cosmos is required for ingestion, abort early to avoid hammering upstream APIs.
+		if (requireCosmos && cosmos is null)
+		{
+			Console.Error.WriteLine("Cosmos DB is not available and Ingestion:RequireCosmos=true. Aborting ingestion to avoid unnecessary upstream API traffic.");
+			return;
 		}
 
 		// Ensure reviews container exists WITH VECTOR POLICY
@@ -270,7 +475,7 @@ internal class Program
 			});
 			mw.Start();
 			var ingestor = new BronzeReviewIngestor(steam, dataRoot, cap);
-			var storeIngestor = new BronzeStoreIngestor(steam, dataRoot);
+			var storeIngestor = new BronzeStoreIngestor(steam, dataRoot, candidacyOptions);
 			var newsIngestor = new BronzeNewsIngestor(steam, dataRoot);
 			int[] sampleApps = new[] { 620, 570, 440 };
 			foreach (var appId in sampleApps)
@@ -369,7 +574,7 @@ internal class Program
 			var sem = new System.Threading.SemaphoreSlim(Math.Clamp(concurrency, 1, 16));
 			var tasks = new List<Task>();
 			var bronzeReviews = new BronzeReviewIngestor(steam, dataRoot, Math.Max(1, reviewsCapPerApp));
-			var bronzeStore = new BronzeStoreIngestor(steam, dataRoot);
+			var bronzeStore = new BronzeStoreIngestor(steam, dataRoot, candidacyOptions);
 			var bronzeNews = new BronzeNewsIngestor(steam, dataRoot);
 
 			var cts = new System.Threading.CancellationTokenSource();
@@ -528,7 +733,7 @@ internal class Program
 
 				var texts = picked.Select(r => r.text).ToList();
 				List<float[]> vectors;
-				try { vectors = await EmbeddingUtils.GenerateVectorsAsync(http, ollamaEndpoint, ollamaModel, texts, dims, allowDeterministicFallback, embNumCtx, embMaxBatch); }
+				try { vectors = await EmbeddingUtils.GenerateVectorsAsync(http, ollamaEndpoint, ollamaModel, texts, dims, allowDeterministicFallback, embNumCtx, embMaxBatch, allowChunking); }
 				catch { embeddingFailures.Add(1, new KeyValuePair<string, object?>[] { new("stage", "reviews") }); throw; }
 
 				var reviewsWritten = 0;
@@ -585,7 +790,7 @@ internal class Program
 					{
 						try
 						{
-							pendingGameVector = (await EmbeddingUtils.GenerateVectorsAsync(http, ollamaEndpoint, ollamaModel, new List<string> { combinedDesc! }, dims, allowDeterministicFallback, embNumCtx, embMaxBatch)).FirstOrDefault();
+							pendingGameVector = (await EmbeddingUtils.GenerateVectorsAsync(http, ollamaEndpoint, ollamaModel, new List<string> { combinedDesc! }, dims, allowDeterministicFallback, embNumCtx, embMaxBatch, allowChunking)).FirstOrDefault();
 						}
 						catch { /* embedding failure is non-fatal for game doc */ }
 					}
@@ -673,7 +878,7 @@ internal class Program
 		if (seededGames.Count > 0 && reviews is not null)
 		{
 			var probe = "co-op puzzle with portals and witty writing";
-				var vec = (await EmbeddingUtils.GenerateVectorsAsync(http, ollamaEndpoint, ollamaModel, new List<string> { probe }, dims, allowDeterministicFallback, embNumCtx, embMaxBatch)).First();
+				var vec = (await EmbeddingUtils.GenerateVectorsAsync(http, ollamaEndpoint, ollamaModel, new List<string> { probe }, dims, allowDeterministicFallback, embNumCtx, embMaxBatch, allowChunking)).First();
 			await VectorProbe.TryProbeAsync(reviews, dbName!, reviewsContainer!, distance, vec, formPref, fieldPath: vectorPath);
 		}
 	}

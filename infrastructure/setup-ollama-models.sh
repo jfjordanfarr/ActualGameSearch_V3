@@ -31,7 +31,7 @@ else
         exit 1
     fi
     
-    echo "��️  Creating nomic-embed-8k from Modelfile..."
+    echo "🛠️  Creating nomic-embed-8k from Modelfile..."
     ollama create nomic-embed-8k -f "$MODELFILE_PATH"
     
     if [ $? -eq 0 ]; then
@@ -44,12 +44,12 @@ fi
 
 # Quick test
 echo "🧪 Testing model..."
-RESPONSE=$(curl -s -X POST http://localhost:11434/api/embeddings \
+RESPONSE=$(curl -s -X POST http://localhost:11434/api/embed \
     -H "Content-Type: application/json" \
-    -d '{"model": "nomic-embed-8k:latest", "prompt": "test"}')
+    -d '{"model": "nomic-embed-8k:latest", "input": ["test with 8k context"], "options": {"num_ctx": 8192}}')
 
-if echo "$RESPONSE" | jq -e '.embedding | length > 0' >/dev/null 2>&1; then
-    DIM=$(echo "$RESPONSE" | jq '.embedding | length')
+if echo "$RESPONSE" | jq -e '.embeddings | length > 0' >/dev/null 2>&1; then
+    DIM=$(echo "$RESPONSE" | jq '.embeddings[0] | length')
     echo "✅ Model working! Embedding dimension: $DIM"
 else
     echo "❌ Model test failed: $RESPONSE"

@@ -39,8 +39,68 @@ public static class EmbeddingUtils
         return vec;
     }
 
-    public static async Task<List<float[]>> GenerateVectorsAsync(HttpClient http, string ollamaEndpoint, string model, List<string> texts, int dims, bool allowDeterministicFallback, int numCtx = 2048, int maxBatch = 64)
+    public static async Task<List<float[]>> GenerateVectorsAsync(HttpClient http, string ollamaEndpoint, string model, List<string> texts, int dims, bool allowDeterministicFallback, int numCtx = 2048, int maxBatch = 64, bool allowChunking = false)
     {
+        // Helper: mean-pool multiple vectors
+        static float[] MeanPool(IReadOnlyList<float[]> parts, int dims)
+        {
+            var acc = new float[dims];
+            if (parts.Count == 0) return acc;
+            foreach (var v in parts)
+            {
+                for (int i = 0; i < dims && i < v.Length; i++) acc[i] += v[i];
+            }
+            var inv = 1.0f / parts.Count;
+            for (int i = 0; i < dims; i++) acc[i] *= inv;
+            return acc;
+        }
+
+        // Enforce correctness by default: if inputs exceed estimated context, fail unless chunking is explicitly allowed.
+        // Heuristic mapping ~4 chars per token avoids a tokenizer dependency.
+        int approxCharsPerToken = 4;
+        int maxChars = Math.Max(256, numCtx * approxCharsPerToken);
+        var expandedTexts = new List<(int originalIndex, string piece)>();
+        var pieceBoundaries = new List<(int start, int count)>();
+        if (!allowChunking)
+        {
+            for (int idx = 0; idx < texts.Count; idx++)
+            {
+                var t = texts[idx] ?? string.Empty;
+                if (t.Length > maxChars)
+                {
+                    throw new InvalidOperationException($"Input text at index {idx} exceeds allowed context length (chars={t.Length} > maxApproxChars={maxChars}). Increase Embeddings:NumCtx or enable Embeddings:AllowChunking explicitly.");
+                }
+                pieceBoundaries.Add((expandedTexts.Count, 1));
+                expandedTexts.Add((idx, t));
+            }
+        }
+        else
+        {
+            for (int idx = 0; idx < texts.Count; idx++)
+            {
+                var t = texts[idx] ?? string.Empty;
+                if (t.Length <= maxChars)
+                {
+                    pieceBoundaries.Add((expandedTexts.Count, 1));
+                    expandedTexts.Add((idx, t));
+                    continue;
+                }
+                int start = 0;
+                int pieces = 0;
+                while (start < t.Length)
+                {
+                    int len = Math.Min(maxChars, t.Length - start);
+                    expandedTexts.Add((idx, t.Substring(start, len)));
+                    start += len;
+                    pieces++;
+                }
+                pieceBoundaries.Add((expandedTexts.Count - pieces, pieces));
+            }
+        }
+
+        // Work over the expanded piece list, but keep original ordering via indices.
+        var pieceTexts = expandedTexts.Select(e => e.piece).ToList();
+
         async Task<(bool ok, List<float[]> vecs)> TryCallAsync(string path, object payload, Func<System.Text.Json.JsonElement, List<float[]>> projector)
         {
             try
@@ -56,7 +116,7 @@ public static class EmbeddingUtils
                 using var stream = await resp.Content.ReadAsStreamAsync();
                 using var doc = await System.Text.Json.JsonDocument.ParseAsync(stream);
                 var list = projector(doc.RootElement);
-                if (list.Count == texts.Count) return (true, list);
+                if (list.Count == ((payload as dynamic).input as System.Collections.ICollection)?.Count) return (true, list);
                 return (false, new());
             }
             catch { return (false, new()); }
@@ -94,37 +154,65 @@ public static class EmbeddingUtils
 
         // Batch inputs to avoid extremely large single calls
         var batches = new List<List<string>>();
-        for (int i = 0; i < texts.Count; i += Math.Max(1, maxBatch))
-            batches.Add(texts.GetRange(i, Math.Min(maxBatch, texts.Count - i)));
+        for (int i = 0; i < pieceTexts.Count; i += Math.Max(1, maxBatch))
+            batches.Add(pieceTexts.GetRange(i, Math.Min(maxBatch, pieceTexts.Count - i)));
 
-        var all = new List<float[]>(capacity: texts.Count);
+        var allPieces = new List<float[]>(capacity: pieceTexts.Count);
         foreach (var batch in batches)
         {
             var options = new { num_ctx = numCtx };
-            var payloadEmb = new { model, input = batch, options };
-            var t1 = await TryCallAsync("api/embeddings", payloadEmb, ProjectEmbeddingsData);
-            if (t1.ok)
-            {
-                Console.WriteLine($"Ollama embeddings via /api/embeddings input (dims={t1.vecs.FirstOrDefault()?.Length ?? 0}, batch={batch.Count})");
-                all.AddRange(t1.vecs);
-                continue;
-            }
+            // Try the more reliable endpoint first
             var payloadEmbed = new { model, input = batch, options };
             var t3 = await TryCallAsync("api/embed", payloadEmbed, ProjectEmbedArray);
             if (t3.ok)
             {
                 Console.WriteLine($"Ollama embeddings via /api/embed (dims={t3.vecs.FirstOrDefault()?.Length ?? 0}, batch={batch.Count})");
-                all.AddRange(t3.vecs);
+                allPieces.AddRange(t3.vecs);
+                continue;
+            }
+            // Then try legacy /api/embeddings which may be absent on some builds
+            var payloadEmb = new { model, input = batch, options };
+            var t1 = await TryCallAsync("api/embeddings", payloadEmb, ProjectEmbeddingsData);
+            if (t1.ok)
+            {
+                Console.WriteLine($"Ollama embeddings via /api/embeddings input (dims={t1.vecs.FirstOrDefault()?.Length ?? 0}, batch={batch.Count})");
+                allPieces.AddRange(t1.vecs);
+                continue;
+            }
+
+            // Fallback: OpenAI-compatible path (supported by Ollama when the compatibility API is enabled)
+            var payloadV1 = new { model, input = batch };
+            var tV1 = await TryCallAsync("v1/embeddings", payloadV1, ProjectEmbeddingsData);
+            if (tV1.ok)
+            {
+                Console.WriteLine($"Ollama embeddings via /v1/embeddings (dims={tV1.vecs.FirstOrDefault()?.Length ?? 0}, batch={batch.Count})");
+                allPieces.AddRange(tV1.vecs);
                 continue;
             }
             // If neither endpoint worked for this batch, bail out
-            all.Clear();
+            allPieces.Clear();
             break;
         }
 
-        if (all.Count == texts.Count)
+        // Recompose piece vectors back to one per original input via mean-pooling
+        if (allPieces.Count == pieceTexts.Count)
         {
-            return all;
+            var result = new List<float[]>(texts.Count);
+            int cursor = 0;
+            foreach (var (start, count) in pieceBoundaries)
+            {
+                if (count == 1)
+                {
+                    result.Add(allPieces[cursor++]);
+                }
+                else
+                {
+                    var parts = new List<float[]>(count);
+                    for (int i = 0; i < count; i++) parts.Add(allPieces[cursor++]);
+                    result.Add(MeanPool(parts, dims));
+                }
+            }
+            if (result.Count == texts.Count) return result;
         }
 
         if (allowDeterministicFallback)

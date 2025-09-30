@@ -71,6 +71,21 @@ Spec: /workspaces/ActualGameSearch_V3/specs/003-path-to-persistence/spec.md
 - Rationale: Clean text improves semantic analysis; keeps raw for provenance.
 - Alternatives: Store only raw – hurts later analysis; store only cleaned – loses provenance.
 
+11) App Enumeration Source
+- Decision: Use the official Steam app list endpoint for storewide catalog enumeration; persist as `bronze/steam-catalog/{date}/apps.json.gz` with a manifest entry.
+- Rationale: Single authoritative list; enables random-without-replacement iteration and aligns with “ask Steam once.”
+- Alternatives: Seed lists or previously seen appids only – incomplete; requires bootstrap.
+
+12) Tiered Review Extension Default Stage
+- Decision: Perform targeted review deltas at Silver by default to extend selected appids to a higher cap for analysis; Gold MAY also extend if needed.
+- Rationale: Balances earlier analytical fidelity with storage discipline; Bronze remains breadth-first.
+- Alternatives: Only extend at Gold – delays insight; extend at Bronze – increases storage prematurely.
+
+13) News Taxonomy Discovery
+- Decision: Start with a discovery census (tags/body features) and classify to a coarse taxonomy (patch/update vs marketing/other); iterate as distributions are observed.
+- Rationale: Unknown tag/value space; avoid premature filtering at Bronze.
+- Alternatives: Hardcode taxonomy now – risks drift and misclassification.
+
 ## Open Questions (tracked)
 - Cloud path (Azure ADLS vs R2) remains a later decision; local-first suffices now.
 - Review delta fetch practical cursor limits: verify on first prototype.

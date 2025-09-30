@@ -25,6 +25,7 @@ This feature primarily adds a background worker, not new HTTP endpoints. The con
 - --sample=250 (Bronze app sample size)
 - --concurrency=4 (Bronze parallelism)
 - --resume=run-YYYYMMDD-HHMMSS (resume an existing Bronze run; uses runstate at bronze/runstate/{runId}.json)
+ - --catalog (when present on ingest bronze, first create `bronze/steam-catalog/{date}/apps.json.gz` from the official Steam app list endpoint)
  - --reviews-language=all --reviews-type=all --reviews-purchase=steam --reviews-per-page=100
  - --silver-min-unique-words=20 (applied in normalization, not Bronze capture)
  - --silver-exclude-free-received=true
@@ -34,14 +35,14 @@ This feature primarily adds a background worker, not new HTTP endpoints. The con
 ## Outputs
 - Exit code 0 on success; nonzero on failure.
 - Writes manifests under each dataset/partition.
-- Writes run.json summary with counts, durations, errors.
+- Writes run-summary.json with counts, durations, errors, and a PolicyMetadata block (policy_version, thresholds, fallback_reason, effective_values, sample_counts).
 
 ## File Layout Contract
 - bronze/
-  - reviews/{yyyy}/{MM}/{dd}/{runId}/appid={id}/page={n}.json.gz
-  - store/{yyyy}/{MM}/{dd}/{runId}/appid={id}.json.gz
-  - news/{yyyy}/{MM}/{dd}/{runId}/appid={id}/page={n}.json.gz
-  - catalog/{yyyy}/{MM}/{dd}/{runId}/catalog.json.gz
+  - steam-reviews/{date}/{appid}/page_{n}.json.gz
+  - steam-appdetails/{date}/{appid}.json.gz
+  - steam-news/{date}/{appid}/page_{n}.json.gz
+  - steam-catalog/{date}/apps.json.gz
   - manifests/{runId}.manifest.json
 - silver/
   - games/partition={yyyyMMdd}/{file}.parquet
@@ -53,7 +54,7 @@ This feature primarily adds a background worker, not new HTTP endpoints. The con
 ## External Endpoints & Behaviors
 - News: `ISteamNews/GetNewsForApp/v2` with optional `tags=patchnotes`; consider pinning version in requests.
 - Reviews: `https://store.steampowered.com/appreviews/{appid}?json=1` with cursor pagination. Start with `cursor=*` and follow URL-encoded cursors until completion. Respect per-app review cap at Bronze.
-- Tiered capture: After derive step selects Gold candidates, perform targeted review deltas for those appids up to `--gold-review-cap-per-app` prior to computing embeddings/metrics.
+- Tiered capture: Silver is the default stage for targeted review deltas to extend selected appids up to a higher cap for analysis; Gold MAY also extend prior to computing embeddings/metrics. Avoid re-fetching already captured pages.
 - Workshop (optional Silver+): `IPublishedFileService/QueryFiles/v1` for UGC metrics.
 
 ## Sanitization & Metrics
