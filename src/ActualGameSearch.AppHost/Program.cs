@@ -59,8 +59,10 @@ var worker = builder.AddProject<Projects.ActualGameSearch_Worker>("worker")
 				.WithEnvironment("Ingestion:RequireCosmos", "true")
 					.WithEnvironment("ASPIRE_DASHBOARD_OTLP_HTTP_ENDPOINT_URL", otlp)
 					.WithEnvironment("OTEL_EXPORTER_OTLP_ENDPOINT", otlp)
-					// Ensure data lake writes go to the repo-level AI-Agent-Workspace, not under the Worker project
-					.WithEnvironment("DataLake:Root", "../../AI-Agent-Workspace/Artifacts/DataLake")
+					// Ensure data lake writes go to the repo-level AI-Agent-Workspace, not under the Worker project.
+					// The Worker resolves relative paths against the solution root, so this will map to:
+					// <repo-root>/AI-Agent-Workspace/Artifacts/DataLake
+					.WithEnvironment("DataLake:Root", "AI-Agent-Workspace/Artifacts/DataLake")
 					.WaitFor(ollama);
 
 // Optionally start the Worker in a specific mode by passing CLI args via env var

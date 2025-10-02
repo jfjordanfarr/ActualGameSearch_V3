@@ -15,6 +15,7 @@ public class ManifestWriter
     private readonly IDictionary<string, string> _input;
     private readonly ConcurrentDictionary<string, int> _counts = new();
     private readonly ConcurrentDictionary<string, int> _errors = new();
+    private readonly ConcurrentDictionary<string, string> _artifacts = new();
     private DateTimeOffset? _start;
     private DateTimeOffset? _end;
 
@@ -40,6 +41,18 @@ public class ManifestWriter
         _errors.AddOrUpdate(key, 1, (_, existing) => existing + 1);
     }
 
+    public void AddArtifact(string name, string path)
+    {
+        _artifacts.AddOrUpdate(name, path, (_, __) => path);
+    }
+
+    public void AddMeta(string key, string value)
+    {
+        // Convenience to enrich input metadata bag
+        if (!_input.ContainsKey(key)) _input[key] = value;
+        else _input[key] = value;
+    }
+
     public async Task SaveAsync()
     {
         var durationMs = (_start.HasValue && _end.HasValue) ? (long)(_end.Value - _start.Value).TotalMilliseconds : 0L;
@@ -52,7 +65,8 @@ public class ManifestWriter
             durationMs,
             counts = _counts,
             errors = _errors,
-            input = _input
+            input = _input,
+            artifacts = _artifacts
         };
 
         var json = JsonSerializer.Serialize(manifestObj, new JsonSerializerOptions { WriteIndented = true });

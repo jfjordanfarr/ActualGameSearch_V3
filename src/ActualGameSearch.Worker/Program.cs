@@ -19,6 +19,7 @@ using ActualGameSearch.Core.Services;
 using ActualGameSearch.Worker.Services;
 using ActualGameSearch.Worker.Ingestion;
 using ActualGameSearch.Worker.Storage;
+using System.Text.Json;
 
 namespace ActualGameSearch.Worker;
 
@@ -468,11 +469,22 @@ internal class Program
 			var cap = int.TryParse(builder.Configuration["Ingestion:ReviewCapBronze"], out var rc) ? rc : 10;
 			var runId = $"run-{DateTime.UtcNow:yyyyMMdd-HHmmss}";
 			var today = DateTime.UtcNow.Date;
+			// Run-scoped log tee
+			var logPath = DataLakePaths.Bronze.ConsoleLog(dataRoot, today, runId);
+			Directory.CreateDirectory(Path.GetDirectoryName(logPath)!);
+			using var logFile = File.CreateText(logPath);
+			using var tee = new TeeTextWriter(Console.Out, logFile);
+			Console.SetOut(tee);
+			Console.SetError(tee);
 			var mw = new ManifestWriter(dataRoot, runId, "bronze", new Dictionary<string, string>
 			{
 				["reviewCapBronze"] = cap.ToString(),
-				["mode"] = "sample"
+				["mode"] = "sample",
+				["embeddingModel"] = ollamaModel,
+				["embeddingNumCtx"] = embNumCtx.ToString(),
+				["embeddingDims"] = dims.ToString()
 			});
+			mw.AddArtifact("consoleLog", logPath);
 			mw.Start();
 			var ingestor = new BronzeReviewIngestor(steam, dataRoot, cap);
 			var storeIngestor = new BronzeStoreIngestor(steam, dataRoot, candidacyOptions);
@@ -496,6 +508,9 @@ internal class Program
 					mw.RecordError(ex);
 				}
 			}
+			// Sanity report
+			var sanityPath = await GenerateBronzeSanityReportAsync(dataRoot, today, runId);
+			mw.AddArtifact("sanityReport", sanityPath);
 			mw.Finish();
 			await mw.SaveAsync();
 			Console.WriteLine($"Bronze sample complete. Manifest: {DataLakePaths.Bronze.Manifest(dataRoot, runId)}");
@@ -540,6 +555,13 @@ internal class Program
 
 			var runId = !string.IsNullOrWhiteSpace(resumeRunId) ? resumeRunId! : $"run-{DateTime.UtcNow:yyyyMMdd-HHmmss}";
 			var today = DateTime.UtcNow.Date;
+			// Set up run-scoped console tee to file for auditability
+			var logPath = DataLakePaths.Bronze.ConsoleLog(dataRoot, today, runId);
+			Directory.CreateDirectory(Path.GetDirectoryName(logPath)!);
+			using var logFile = File.CreateText(logPath);
+			using var tee = new TeeTextWriter(Console.Out, logFile);
+			Console.SetOut(tee);
+			Console.SetError(tee);
 			var steam = host.Services.GetRequiredService<ISteamClient>();
 			var mw = new ManifestWriter(dataRoot, runId, "bronze", new Dictionary<string, string>
 			{
@@ -548,8 +570,12 @@ internal class Program
 				["reviewsCapPerApp"] = reviewsCapPerApp.ToString(),
 				["newsCount"] = newsCount.ToString(),
 				["newsTags"] = newsTags ?? "<all>",
-				["concurrency"] = Math.Clamp(concurrency, 1, 16).ToString()
+				["concurrency"] = Math.Clamp(concurrency, 1, 16).ToString(),
+				["embeddingModel"] = ollamaModel,
+				["embeddingNumCtx"] = embNumCtx.ToString(),
+				["embeddingDims"] = dims.ToString()
 			});
+			mw.AddArtifact("consoleLog", logPath);
 			mw.Start();
 
 			// Build app sample
@@ -606,6 +632,9 @@ internal class Program
 			}
 
 			await Task.WhenAll(tasks);
+			// Generate a sanity report artifact
+			var sanityPath = await GenerateBronzeSanityReportAsync(dataRoot, today, runId);
+			mw.AddArtifact("sanityReport", sanityPath);
 			mw.Finish();
 			await mw.SaveAsync();
 			Console.WriteLine($"Bronze ingest complete. Manifest: {DataLakePaths.Bronze.Manifest(dataRoot, runId)}");
@@ -885,27 +914,41 @@ internal class Program
 
 	private static string ResolveDataRoot(string? configured)
 	{
-		// Prefer configured absolute/relative path if provided
-		if (!string.IsNullOrWhiteSpace(configured))
-		{
-			var path = configured;
-			if (!Path.IsPathRooted(path)) path = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, path));
-			return path;
-		}
-		// Default to repo-level AI-Agent-Workspace/Artifacts/DataLake to avoid writing under project bin/ directories when hosted by Aspire
 		// Try to detect solution root by walking up from BaseDirectory
 		var dir = new DirectoryInfo(AppContext.BaseDirectory);
 		for (int i = 0; i < 8 && dir?.Parent is not null; i++)
 		{
 			if (File.Exists(Path.Combine(dir.FullName, "ActualGameSearch.sln")))
 			{
+				// If a configured path is provided and relative, resolve it against the solution root
+				if (!string.IsNullOrWhiteSpace(configured))
+				{
+					var path = configured!;
+					if (!Path.IsPathRooted(path))
+					{
+						path = Path.GetFullPath(Path.Combine(dir.FullName, path));
+						Directory.CreateDirectory(path);
+						return path;
+					}
+					// Configured path is absolute; use as-is
+					Directory.CreateDirectory(path);
+					return path;
+				}
+				// No configured path: use the default under the solution root
 				var target = Path.Combine(dir.FullName, "AI-Agent-Workspace", "Artifacts", "DataLake");
 				Directory.CreateDirectory(target);
 				return target;
 			}
 			dir = dir.Parent;
 		}
-		// Fallback to a relative path from process directory
+		// No solution file found. If configured, resolve relative to base directory; else fallback under process directory
+		if (!string.IsNullOrWhiteSpace(configured))
+		{
+			var path = configured!;
+			if (!Path.IsPathRooted(path)) path = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, path));
+			Directory.CreateDirectory(path);
+			return path;
+		}
 		var fallback = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "AI-Agent-Workspace", "Artifacts", "DataLake"));
 		Directory.CreateDirectory(fallback);
 		return fallback;
@@ -1094,4 +1137,133 @@ internal class Program
 			"is","am","are","was","were","be","been","being","it's","its","this","that","these","those","as","it","i","you","he","she","they","we","me","him","her","them","us",
 			"my","your","his","hers","their","our","mine","yours","theirs","ours","do","does","did","done","not","no","yes","y","n","gg","ok","okay","cool","nice","good","bad"
 		}, StringComparer.OrdinalIgnoreCase);
+
+	// Simple TextWriter that tees output to two writers (console + file)
+	private sealed class TeeTextWriter : TextWriter
+	{
+		private readonly TextWriter _a;
+		private readonly TextWriter _b;
+		public TeeTextWriter(TextWriter a, TextWriter b)
+		{
+			_a = a; _b = b;
+		}
+		public override Encoding Encoding => _a.Encoding;
+		public override void Write(char value) { _a.Write(value); _b.Write(value); }
+		public override void Write(string? value) { _a.Write(value); _b.Write(value); }
+		public override void WriteLine(string? value) { _a.WriteLine(value); _b.WriteLine(value); }
+		public override void Flush() { try { _a.Flush(); } catch { } try { _b.Flush(); } catch { } }
+		protected override void Dispose(bool disposing)
+		{
+			if (disposing)
+			{
+				try { _a.Flush(); } catch { }
+				try { _b.Flush(); } catch { }
+				try { _b.Dispose(); } catch { }
+			}
+			base.Dispose(disposing);
+		}
+	}
+
+	private static async Task<string> GenerateBronzeSanityReportAsync(string dataRoot, DateTime today, string runId)
+	{
+		// Count files and totals; check for obviously empty outputs
+		var report = new Dictionary<string, object?>();
+		string dayRoot = Path.Combine(dataRoot, "bronze");
+		string y = today.Year.ToString("D4"), m = today.Month.ToString("D2"), d = today.Day.ToString("D2");
+		string reviewsDir = Path.Combine(dayRoot, "reviews", y, m, d, runId);
+		string storeDir = Path.Combine(dayRoot, "store", y, m, d, runId);
+		string newsDir = Path.Combine(dayRoot, "news", y, m, d, runId);
+
+	int reviewFiles = Directory.Exists(reviewsDir) ? Directory.EnumerateFiles(reviewsDir, "*.json.gz", SearchOption.AllDirectories).Count() : 0;
+	int storeFiles = Directory.Exists(storeDir) ? Directory.EnumerateFiles(storeDir, "*.json.gz", SearchOption.TopDirectoryOnly).Count() : 0;
+	int newsFiles = Directory.Exists(newsDir) ? Directory.EnumerateFiles(newsDir, "*.json.gz", SearchOption.AllDirectories).Count() : 0;
+
+		report["counts"] = new Dictionary<string, int>
+		{
+			["reviewsFiles"] = reviewFiles,
+			["storeFiles"] = storeFiles,
+			["newsFiles"] = newsFiles
+		};
+
+		var warnings = new List<string>();
+		if (reviewFiles == 0) warnings.Add("No review pages were written; Steam throttling or selection may be too strict.");
+		if (storeFiles == 0) warnings.Add("No store payloads were written; Bronze candidacy MinRecommendations may be too high.");
+		if (newsFiles == 0) warnings.Add("No news payloads were written; tags/count settings may be too strict or apps had no news.");
+		report["warnings"] = warnings;
+
+		// Cross-artifact coverage: derive appIds present in each folder to detect gaps
+		static int? ParseAppIdFromPath(string path)
+		{
+			// reviews: .../appid=12345/page=1.json.gz
+			var name = Path.GetFileName(path);
+			// Look one directory up for reviews/news where parent dir is appid=123
+			var parent = new DirectoryInfo(Path.GetDirectoryName(path) ?? string.Empty).Name;
+			if (parent.StartsWith("appid=", StringComparison.OrdinalIgnoreCase))
+				parent = parent.Substring("appid=".Length);
+			if (int.TryParse(parent, out var id1)) return id1;
+			// store: filename appid=12345.json.gz
+			var fn = Path.GetFileNameWithoutExtension(Path.GetFileNameWithoutExtension(name)); // strip .json.gz
+			if (fn.StartsWith("appid=", StringComparison.OrdinalIgnoreCase))
+			{
+				var s = fn.Substring("appid=".Length);
+				if (int.TryParse(s, out var id2)) return id2;
+			}
+			return null;
+		}
+		var reviewAppIds = Directory.Exists(reviewsDir) ? Directory.EnumerateFiles(reviewsDir, "*.json.gz", SearchOption.AllDirectories).Select(ParseAppIdFromPath).Where(id => id.HasValue).Select(id => id!.Value).ToHashSet() : new HashSet<int>();
+		var storeAppIds = Directory.Exists(storeDir) ? Directory.EnumerateFiles(storeDir, "*.json.gz", SearchOption.TopDirectoryOnly).Select(ParseAppIdFromPath).Where(id => id.HasValue).Select(id => id!.Value).ToHashSet() : new HashSet<int>();
+		var newsAppIds = Directory.Exists(newsDir) ? Directory.EnumerateFiles(newsDir, "*.json.gz", SearchOption.AllDirectories).Select(ParseAppIdFromPath).Where(id => id.HasValue).Select(id => id!.Value).ToHashSet() : new HashSet<int>();
+
+		var missingStore = reviewAppIds.Except(storeAppIds).Take(20).ToArray();
+		var missingReviews = storeAppIds.Except(reviewAppIds).Take(20).ToArray();
+		var missingNews = reviewAppIds.Except(newsAppIds).Take(20).ToArray();
+
+		report["coverage"] = new Dictionary<string, object?>
+		{
+			["reviewOnlyApps_sample"] = missingStore,
+			["storeOnlyApps_sample"] = missingReviews,
+			["reviewNoNews_sample"] = missingNews
+		};
+
+		// Quick sample of one review file to estimate average review text length and language distribution
+		string? sampleReviewFile = Directory.Exists(reviewsDir) ? Directory.EnumerateFiles(reviewsDir, "*.json.gz").FirstOrDefault() : null;
+		if (sampleReviewFile is not null)
+		{
+			try
+			{
+				using var fs = File.OpenRead(sampleReviewFile);
+				using var gz = new System.IO.Compression.GZipStream(fs, System.IO.Compression.CompressionMode.Decompress);
+				using var doc = await JsonDocument.ParseAsync(gz);
+				if (doc.RootElement.TryGetProperty("reviews", out var arr) && arr.ValueKind == JsonValueKind.Array)
+				{
+					int n = 0; int totalLen = 0; var langs = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+					foreach (var el in arr.EnumerateArray())
+					{
+						if (el.TryGetProperty("review", out var txt)) { totalLen += txt.GetString()?.Length ?? 0; n++; }
+						if (el.TryGetProperty("language", out var lang))
+						{
+							var k = lang.GetString() ?? "unknown";
+							langs[k] = langs.TryGetValue(k, out var c) ? c + 1 : 1;
+						}
+						if (n >= 50) break; // sample up to 50
+					}
+					if (n > 0)
+					{
+						report["sample"] = new Dictionary<string, object?>
+						{
+							["avgReviewLength"] = (int)Math.Round(totalLen / (double)n),
+							["langsTop"] = langs.OrderByDescending(kv => kv.Value).Take(5).ToDictionary(kv => kv.Key, kv => kv.Value)
+						};
+					}
+				}
+			}
+			catch { /* best-effort only */ }
+		}
+
+		var outPath = DataLakePaths.Bronze.SanityReport(dataRoot, today, runId);
+		Directory.CreateDirectory(Path.GetDirectoryName(outPath)!);
+		var json = JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true });
+		await File.WriteAllTextAsync(outPath, json);
+		return outPath;
+	}
 }

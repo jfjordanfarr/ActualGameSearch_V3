@@ -61,6 +61,36 @@ public static class DataLakePaths
         {
             return Path.Combine(root, "bronze", "manifests", $"{runId}.manifest.json");
         }
+
+        public static string LogsDir(string root, DateTime date, string runId)
+        {
+            return Path.Combine(root,
+                "bronze", "logs",
+                date.Year.ToString("D4"),
+                date.Month.ToString("D2"),
+                date.Day.ToString("D2"),
+                runId);
+        }
+
+        public static string ConsoleLog(string root, DateTime date, string runId)
+        {
+            return Path.Combine(LogsDir(root, date, runId), "worker.console.log");
+        }
+
+        public static string ReportsDir(string root, DateTime date, string runId)
+        {
+            return Path.Combine(root,
+                "bronze", "reports",
+                date.Year.ToString("D4"),
+                date.Month.ToString("D2"),
+                date.Day.ToString("D2"),
+                runId);
+        }
+
+        public static string SanityReport(string root, DateTime date, string runId)
+        {
+            return Path.Combine(ReportsDir(root, date, runId), "sanity.json");
+        }
     }
 
     public static class Silver
